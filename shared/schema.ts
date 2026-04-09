@@ -78,6 +78,10 @@ export const appSettings = pgTable("app_settings", {
   ebayShippingPolicy: text("ebay_shipping_policy"),
   ebayDispatchDays: integer("ebay_dispatch_days").default(3),
   ebayLocation: text("ebay_location").default("Japan"),
+  /** Finding / Browse OAuth: Production App ID (Client ID) */
+  ebayAppId: text("ebay_app_id"),
+  /** Finding / Browse OAuth: Cert ID (Client Secret) — サーバー内のみで使用 */
+  ebayCertId: text("ebay_cert_id"),
 });
 
 export const insertSavedProductSchema = createInsertSchema(savedProducts).omit({

@@ -40,7 +40,10 @@ export default function SettingsPage() {
   const [ebayShippingPolicy, setEbayShippingPolicy] = useState("");
   const [ebayDispatchDays, setEbayDispatchDays] = useState("3");
   const [ebayLocation, setEbayLocation] = useState("Japan");
+  const [ebayAppId, setEbayAppId] = useState("");
+  const [ebayCertId, setEbayCertId] = useState("");
   const [showToken, setShowToken] = useState(false);
+  const [showEbayCert, setShowEbayCert] = useState(false);
 
   // Forwarding cost preview
   const [previewWeight, setPreviewWeight] = useState("300");
@@ -65,6 +68,8 @@ export default function SettingsPage() {
       setEbayShippingPolicy(settings.ebayShippingPolicy || "");
       setEbayDispatchDays(String(settings.ebayDispatchDays ?? 3));
       setEbayLocation(settings.ebayLocation || "Japan");
+      setEbayAppId(settings.ebayAppId || "");
+      setEbayCertId(settings.ebayCertId || "");
     }
   }, [settings]);
 
@@ -89,6 +94,8 @@ export default function SettingsPage() {
         ebayShippingPolicy: ebayShippingPolicy || null,
         ebayDispatchDays: parseInt(ebayDispatchDays) || 3,
         ebayLocation: ebayLocation || "Japan",
+        ebayAppId: ebayAppId.trim() || null,
+        ebayCertId: ebayCertId.trim() || null,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
@@ -131,6 +138,62 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      {/* eBay API keys (search OAuth + Trading headers) */}
+      <Card className="border-blue-200 dark:border-blue-900">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-blue-600" />
+            eBay API（検索・出品）
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="p-3 rounded-md bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 text-xs space-y-1.5 text-blue-800 dark:text-blue-200">
+            <p>
+              <a href="https://developer.ebay.com/my/keys" target="_blank" rel="noreferrer" className="underline font-medium">
+                My Keys（Production）
+              </a>
+              の <strong>App ID（Client ID）</strong> と <strong>Cert ID（Client Secret）</strong> を入力します。商品検索（Finding / Browse OAuth）と Trading API 出品の HTTP ヘッダの両方に使われます。
+            </p>
+            <p className="text-[10px] opacity-90">
+              環境変数 <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_APP_ID</code> / <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_CERT_ID</code> をホストに設定している場合は、そちらが<strong>優先</strong>されます（設定画面の値は無視）。
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-sm">App ID（Client ID）</Label>
+            <Input
+              value={ebayAppId}
+              onChange={(e) => setEbayAppId(e.target.value)}
+              placeholder="例: YourApp-PRD-xxxxxxxx-xxffffff"
+              className="text-xs font-mono"
+              autoComplete="off"
+              data-testid="input-ebay-app-id"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-sm flex items-center justify-between">
+              <span>Cert ID（Client Secret）</span>
+              <button
+                type="button"
+                onClick={() => setShowEbayCert(!showEbayCert)}
+                className="text-muted-foreground hover:text-foreground p-0.5"
+                aria-label={showEbayCert ? "隠す" : "表示"}
+              >
+                {showEbayCert ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </Label>
+            <Input
+              type={showEbayCert ? "text" : "password"}
+              value={ebayCertId}
+              onChange={(e) => setEbayCertId(e.target.value)}
+              placeholder="PRD-xxxxxxxx-xxxx-…"
+              className="text-xs font-mono"
+              autoComplete="new-password"
+              data-testid="input-ebay-cert-id"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* eBay Seller Account */}
       <Card className="border-orange-200 dark:border-orange-800">
         <CardHeader className="pb-3">
@@ -162,7 +225,7 @@ export default function SettingsPage() {
               </li>
             </ol>
             <p className="text-amber-500 dark:text-amber-500 text-[10px]">
-              ※ EBAY_APP_ID と EBAY_CERT_ID は既にサーバー側で設定済みです。
+              ※ 上の「eBay API（検索・出品）」または環境変数で App ID / Cert ID を設定してください。
             </p>
           </div>
 

@@ -636,6 +636,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ebayShippingPolicy: z.string().nullable().optional(),
         ebayDispatchDays: z.number().int().optional(),
         ebayLocation: z.string().optional(),
+        ebayAppId: z.string().nullable().optional(),
+        ebayCertId: z.string().nullable().optional(),
       });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
@@ -674,10 +676,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ error: "title, price, categoryId は必須です" });
       }
 
-      const APP_ID = process.env.EBAY_APP_ID || "";
-      const CERT_ID = process.env.EBAY_CERT_ID || "";
+      const APP_ID = (process.env.EBAY_APP_ID || settings.ebayAppId || "").trim();
+      const CERT_ID = (process.env.EBAY_CERT_ID || settings.ebayCertId || "").trim();
       const DEV_ID = settings.ebayDevId || "";
       const TOKEN = settings.ebayUserToken;
+
+      if (!APP_ID || !CERT_ID) {
+        return res.status(400).json({
+          error: "eBay App ID（Client ID）と Cert ID（Client Secret）が必要です。設定画面の「eBay API（検索・出品）」または環境変数で設定してください。",
+        });
+      }
 
       // Map condition string to eBay condition ID
       const conditionMap: Record<string, { id: string; name: string }> = {

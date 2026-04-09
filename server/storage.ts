@@ -209,7 +209,7 @@ export class MemStorage implements IStorage {
   private templates: Map<string, ListingTemplate> = new Map();
   private settings: AppSettings = {
     id: "default",
-    spreadsheetId: process.env.SPREADSHEET_ID || "1j-SK1yrXw2Sl_3-LakDHe6FMh23v64wDPYZvlg84Gug",
+    spreadsheetId: process.env.SPREADSHEET_ID || null,
     sheetName: "セドリリスト",
     exchangeRate: 150,
     ebayFeeRate: 13.25,
@@ -220,6 +220,16 @@ export class MemStorage implements IStorage {
     forwardingIntlBase: 2000,
     forwardingIntlPerGram: 3,
     inventorySheetName: "Mercari-eBay 在庫管理",
+    ebayUserToken: null,
+    ebayDevId: null,
+    ebayStoreName: null,
+    ebayPaymentPolicy: null,
+    ebayReturnPolicy: null,
+    ebayShippingPolicy: null,
+    ebayDispatchDays: 3,
+    ebayLocation: "Japan",
+    ebayAppId: process.env.EBAY_APP_ID || null,
+    ebayCertId: process.env.EBAY_CERT_ID || null,
   };
 
   constructor() {

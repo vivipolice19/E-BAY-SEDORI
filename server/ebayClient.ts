@@ -1,23 +1,30 @@
 // eBay API client - uses Browse API (OAuth) when Cert ID is available,
 // falls back to Finding API (App ID only)
 import type { EbayItem, EbaySoldResearchMeta } from "@shared/schema";
+import { storage } from "./storage";
 
-const APP_ID = process.env.EBAY_APP_ID || "";
-const CERT_ID = process.env.EBAY_CERT_ID || "";
+async function resolveEbayApiCredentials(): Promise<{ appId: string; certId: string }> {
+  const s = await storage.getSettings();
+  return {
+    appId: (process.env.EBAY_APP_ID || s.ebayAppId || "").trim(),
+    certId: (process.env.EBAY_CERT_ID || s.ebayCertId || "").trim(),
+  };
+}
 
-// OAuth token cache
-let cachedToken: { token: string; expiresAt: number } | null = null;
+// OAuth token cache（資格情報が変わったら無効化）
+let oauthCache: { credKey: string; token: string; expiresAt: number } | null = null;
 
 async function getOAuthToken(): Promise<string | null> {
-  if (!APP_ID || !CERT_ID) return null;
+  const { appId, certId } = await resolveEbayApiCredentials();
+  if (!appId || !certId) return null;
 
-  // Return cached token if still valid (with 60s buffer)
-  if (cachedToken && cachedToken.expiresAt > Date.now() + 60000) {
-    return cachedToken.token;
+  const credKey = `${appId}\0${certId}`;
+  if (oauthCache && oauthCache.credKey === credKey && oauthCache.expiresAt > Date.now() + 60000) {
+    return oauthCache.token;
   }
 
   try {
-    const credentials = Buffer.from(`${APP_ID}:${CERT_ID}`).toString("base64");
+    const credentials = Buffer.from(`${appId}:${certId}`).toString("base64");
     const res = await fetch("https://api.ebay.com/identity/v1/oauth2/token", {
       method: "POST",
       headers: {
@@ -33,11 +40,12 @@ async function getOAuthToken(): Promise<string | null> {
     }
 
     const data = await res.json();
-    cachedToken = {
+    oauthCache = {
+      credKey,
       token: data.access_token,
       expiresAt: Date.now() + data.expires_in * 1000,
     };
-    return cachedToken.token;
+    return oauthCache.token;
   } catch (err) {
     console.error("OAuth token fetch failed:", err);
     return null;
@@ -228,6 +236,11 @@ async function searchViaFindingApi(options: EbaySearchOptions): Promise<EbayItem
     offset = 0,
   } = options;
 
+  const { appId } = await resolveEbayApiCredentials();
+  if (!appId) {
+    throw new Error("eBay App ID が未設定です。設定画面の「eBay API（検索用）」または環境変数 EBAY_APP_ID を設定してください。");
+  }
+
   const FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1";
   // Finding API uses 1-based page numbers; each page has `limit` items
   const pageNumber = Math.floor(offset / limit) + 1;
@@ -235,7 +248,7 @@ async function searchViaFindingApi(options: EbaySearchOptions): Promise<EbayItem
   const params = new URLSearchParams({
     "OPERATION-NAME": "findItemsByKeywords",
     "SERVICE-VERSION": "1.0.0",
-    "SECURITY-APPNAME": APP_ID,
+    "SECURITY-APPNAME": appId,
     "RESPONSE-DATA-FORMAT": "JSON",
     "REST-PAYLOAD": "",
     keywords,
@@ -362,6 +375,11 @@ export async function findPopularItems(categoryId: string, exchangeRate = 150, l
   }
 
   // Finding API by category
+  const { appId } = await resolveEbayApiCredentials();
+  if (!appId) {
+    throw new Error("eBay App ID が未設定です。設定画面の「eBay API（検索用）」または環境変数 EBAY_APP_ID を設定してください。");
+  }
+
   const FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1";
   const pageNumber = Math.floor(offset / limit) + 1;
   const findingSortMap: Record<string, string> = {
@@ -371,7 +389,7 @@ export async function findPopularItems(categoryId: string, exchangeRate = 150, l
   const params = new URLSearchParams({
     "OPERATION-NAME": "findItemsByCategory",
     "SERVICE-VERSION": "1.0.0",
-    "SECURITY-APPNAME": APP_ID,
+    "SECURITY-APPNAME": appId,
     "RESPONSE-DATA-FORMAT": "JSON",
     "REST-PAYLOAD": "",
     categoryId,
@@ -435,6 +453,11 @@ export async function searchSoldItems(options: EbaySearchOptions): Promise<EbayS
     offset = 0,
     soldEndedWithinDays = 90,
   } = options;
+  const { appId } = await resolveEbayApiCredentials();
+  if (!appId) {
+    throw new Error("eBay App ID が未設定です。設定画面の「eBay API（検索用）」または環境変数 EBAY_APP_ID を設定してください。");
+  }
+
   const FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1";
   const pageSize = Math.min(Math.max(1, limit), 100);
   const pageNumber = Math.floor(offset / pageSize) + 1;
@@ -442,7 +465,7 @@ export async function searchSoldItems(options: EbaySearchOptions): Promise<EbayS
   const params = new URLSearchParams({
     "OPERATION-NAME": "findCompletedItems",
     "SERVICE-VERSION": "1.0.0",
-    "SECURITY-APPNAME": APP_ID,
+    "SECURITY-APPNAME": appId,
     "RESPONSE-DATA-FORMAT": "JSON",
     "REST-PAYLOAD": "",
     keywords: keywords || "",
