@@ -15,8 +15,8 @@ import {
   Search, Bookmark, ExternalLink, Package, Tag,
   Filter, Loader2, TrendingUp, Store, X, Zap,
   ShoppingCart, CheckCircle2, RefreshCw, Calendar, AlertTriangle,
-  Copy, ImageIcon,
 } from "lucide-react";
+import { EbayReverseImageTools } from "@/components/EbayReverseImageTools";
 
 const SORT_OPTIONS = [
   { value: "BestMatch", label: "ベストマッチ" },
@@ -130,75 +130,6 @@ const PLATFORM_STYLES: Record<string, { label: string; color: string; linkColor:
   "ラクマ": { label: "ラクマ", color: "text-teal-600 dark:text-teal-400", linkColor: "bg-teal-50 dark:bg-teal-950 border-teal-200 dark:border-teal-800" },
   "駿河屋": { label: "駿河屋", color: "text-amber-700 dark:text-amber-400", linkColor: "bg-amber-50 dark:bg-amber-950 border-amber-200 dark:border-amber-800" },
 };
-
-/** Googleの「画像で検索」入口（公式APIなし・URLによってはブロックされる場合あり） */
-function buildGoogleImageSearchUrl(imageUrl: string): string {
-  return `https://www.google.com/searchbyimage?image_url=${encodeURIComponent(imageUrl)}&sbisrc=cr_1_5_2&hl=ja`;
-}
-
-function openImageUrlInNewTab(imageUrl: string) {
-  window.open(imageUrl, "_blank", "noopener,noreferrer");
-}
-
-/** eBay出品画像から仕入先・同一出品の手掛かりを探す（Googleレンズはブラウザの右クリック推奨） */
-function EbayReverseImageTools({
-  imageUrl,
-  variant = "card",
-}: {
-  imageUrl: string | undefined;
-  variant?: "card" | "panel";
-}) {
-  const { toast } = useToast();
-  if (!imageUrl?.trim()) return null;
-
-  const stop = (e: React.MouseEvent) => e.stopPropagation();
-
-  const onCopy = async (e: React.MouseEvent) => {
-    stop(e);
-    try {
-      await navigator.clipboard.writeText(imageUrl);
-      toast({ title: "画像URLをコピーしました", description: "Googleレンズ等に貼り付けて検索できます。" });
-    } catch {
-      toast({ title: "コピーに失敗しました", variant: "destructive" });
-    }
-  };
-
-  const onOpenImage = (e: React.MouseEvent) => {
-    stop(e);
-    openImageUrlInNewTab(imageUrl);
-  };
-
-  const onGoogleByImage = (e: React.MouseEvent) => {
-    stop(e);
-    window.open(buildGoogleImageSearchUrl(imageUrl), "_blank", "noopener,noreferrer");
-    toast({
-      title: "Google画像検索を開きました",
-      description: "表示されない場合は「画像を開く」→ 画像上で右クリックし「Googleレンズで検索」を試してください。",
-    });
-  };
-
-  const btnClass =
-    variant === "panel"
-      ? "h-7 text-[10px] px-2 gap-1"
-      : "h-7 text-[10px] px-1.5 gap-0.5 flex-1 min-w-0";
-
-  return (
-    <div className={`flex flex-wrap gap-1 ${variant === "card" ? "w-full" : ""}`} onClick={stop}>
-      <Button type="button" variant="outline" size="sm" className={btnClass} onClick={onOpenImage} data-testid="button-open-ebay-image">
-        <ImageIcon className="w-3 h-3 flex-shrink-0" />
-        画像を開く
-      </Button>
-      <Button type="button" variant="outline" size="sm" className={btnClass} onClick={onCopy} data-testid="button-copy-ebay-image-url">
-        <Copy className="w-3 h-3 flex-shrink-0" />
-        URLコピー
-      </Button>
-      <Button type="button" variant="secondary" size="sm" className={btnClass} onClick={onGoogleByImage} data-testid="button-google-image-search">
-        <Search className="w-3 h-3 flex-shrink-0" />
-        Google画像検索
-      </Button>
-    </div>
-  );
-}
 
 function PriceResultList({
   items,
@@ -525,8 +456,10 @@ function SourcePanel({
   isSaving: boolean;
   onClose: () => void;
 }) {
-  const [searchKeyword, setSearchKeyword] = useState(item.title.slice(0, 60));
-  const [fetchKeyword, setFetchKeyword] = useState(item.title.slice(0, 60));
+  /** 仕入れAPI用（英語タイトル→日本語にしてから検索） */
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [fetchKeyword, setFetchKeyword] = useState("");
+  const [isTranslatingKeyword, setIsTranslatingKeyword] = useState(true);
   const [sourcePrice, setSourcePrice] = useState("");
   const [sourcePlatform, setSourcePlatform] = useState("メルカリ");
   const [selectedSourceUrl, setSelectedSourceUrl] = useState("");
@@ -565,6 +498,45 @@ function SourcePanel({
   const realProfitRate = realProfit !== null && ebayPriceJpy > 0
     ? (realProfit / ebayPriceJpy) * 100 : null;
 
+  useEffect(() => {
+    let cancelled = false;
+    setIsTranslatingKeyword(true);
+    setFetchKeyword("");
+    setSearchKeyword("");
+    const raw = item.title.trim().slice(0, 60);
+    if (!raw) {
+      setSearchKeyword("");
+      setFetchKeyword("");
+      setIsTranslatingKeyword(false);
+      return;
+    }
+    (async () => {
+      try {
+        const res = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: raw }),
+        });
+        const data = res.ok ? await res.json() : null;
+        const jp = data?.translated ? String(data.text).trim().slice(0, 60) : raw;
+        if (!cancelled) {
+          setSearchKeyword(jp);
+          setFetchKeyword(jp);
+        }
+      } catch {
+        if (!cancelled) {
+          setSearchKeyword(raw);
+          setFetchKeyword(raw);
+        }
+      } finally {
+        if (!cancelled) setIsTranslatingKeyword(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [item.itemId, item.title]);
+
   const { data: priceData, isLoading: priceLoading, refetch: refetchPrices, isError: priceError } = useQuery<SourceApiResponse>({
     queryKey: ["/api/source-prices", fetchKeyword],
     queryFn: async () => {
@@ -583,11 +555,29 @@ function SourcePanel({
     },
     staleTime: 5 * 60 * 1000,
     retry: false,
-    enabled: !!fetchKeyword,
+    enabled: !!fetchKeyword && !isTranslatingKeyword,
   });
 
-  const handleSearch = () => {
-    if (searchKeyword.trim()) setFetchKeyword(searchKeyword.trim());
+  const handleSearch = async () => {
+    const kw = searchKeyword.trim().slice(0, 60);
+    if (!kw) return;
+    setIsTranslatingKeyword(true);
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: kw }),
+      });
+      const data = res.ok ? await res.json() : null;
+      const jp = data?.translated ? String(data.text).trim().slice(0, 60) : kw;
+      setSearchKeyword(jp);
+      setFetchKeyword(jp);
+    } catch {
+      setFetchKeyword(kw);
+      setSearchKeyword(kw);
+    } finally {
+      setIsTranslatingKeyword(false);
+    }
   };
 
   const handleSelectItem = (price: number, platform: string, url: string, imageUrls?: string[]) => {
@@ -786,11 +776,15 @@ function SourcePanel({
         </div>
 
         {/* Loading */}
-        {priceLoading && (
+        {(isTranslatingKeyword || priceLoading) && (
           <div className="flex flex-col gap-1.5 py-2">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-              <span>メルカリ・ヤフオク・Yahoo!ショッピング・ラクマ・駿河屋を検索中...</span>
+              <span>
+                {isTranslatingKeyword
+                  ? "タイトルを日本語に変換しています…"
+                  : "メルカリ・ヤフオク・Yahoo!ショッピング・ラクマ・駿河屋を検索中..."}
+              </span>
             </div>
             <Skeleton className="h-10 w-full" />
             <Skeleton className="h-10 w-full" />
@@ -799,7 +793,7 @@ function SourcePanel({
         )}
 
         {/* Results */}
-        {!priceLoading && priceData && (
+        {!isTranslatingKeyword && !priceLoading && priceData && (
           <div className="space-y-3">
             {/* Summary banner */}
             {goodItems.length > 0 && (

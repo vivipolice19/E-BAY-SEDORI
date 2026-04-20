@@ -13,6 +13,7 @@ import {
   ShoppingCart, FileSpreadsheet, Link2, RefreshCw,
   CheckCircle2, XCircle, ChevronDown, ChevronUp, Package, Users,
 } from "lucide-react";
+import { EbayReverseImageTools } from "@/components/EbayReverseImageTools";
 
 // ---- Competitor Check Panel (used in research) ----
 function CompetitorPanel({ keywords, exchangeRate }: { keywords: string; exchangeRate: number }) {
@@ -561,6 +562,18 @@ export default function PriceResearch() {
                       {ebayResult.imageUrl && <img src={ebayResult.imageUrl} alt="" className="w-14 h-14 object-cover rounded flex-shrink-0 border" />}
                       <div className="flex-1 min-w-0">
                         <p className="text-[11px] text-foreground leading-snug line-clamp-2 mb-1">{ebayResult.title}</p>
+                        {ebayResult.imageUrl && (
+                          <div className="rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50/60 dark:bg-violet-950/30 p-2 mb-2 space-y-1">
+                            <p className="text-[10px] font-semibold text-violet-800 dark:text-violet-200 flex items-center gap-1">
+                              <Search className="w-3 h-3" />
+                              画像で仕入先を探す（eBay検索と同じ）
+                            </p>
+                            <EbayReverseImageTools imageUrl={ebayResult.imageUrl} variant="panel" />
+                            <p className="text-[9px] text-muted-foreground leading-snug">
+                              GoogleがURLを拒否する場合は「画像を開く」→ 右クリックで「Googleレンズで画像を検索」が確実です。
+                            </p>
+                          </div>
+                        )}
                         <p className="text-lg font-bold text-blue-700 dark:text-blue-300">¥{ebayResult.priceJpy.toLocaleString()}</p>
                         {ebayResult.weightG && (
                           <p className="text-[10px] text-green-600 font-medium">重量: {ebayResult.weightG}g（eBay取得）</p>
@@ -642,11 +655,7 @@ export default function PriceResearch() {
                     {/* MPN / 型番 search button */}
                     {ebayResult.mpn && (
                       <button
-                        onClick={() => {
-                          setSourceMode("keyword");
-                          setSourceKeyword(ebayResult.mpn!);
-                          setFetchedKeyword(ebayResult.mpn!);
-                        }}
+                        onClick={() => void triggerSourceSearch(ebayResult.mpn!)}
                         className="w-full text-[11px] font-medium py-1.5 rounded transition-colors bg-indigo-100 hover:bg-indigo-200 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200 flex items-center justify-center gap-1"
                         data-testid="button-mpn-search">
                         <Search className="w-3 h-3" />型番「{ebayResult.mpn}」で仕入先検索
