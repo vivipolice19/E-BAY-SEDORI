@@ -5,8 +5,6 @@
  */
 import { spawnSync } from "node:child_process";
 
-const PW_VERSION = "1.58.2";
-
 if (process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD === "1") {
   console.log("[playwright-postinstall] skipped (PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1)");
   process.exit(0);
@@ -25,11 +23,15 @@ if (!shouldInstall) {
   process.exit(0);
 }
 
-console.log(`[playwright-postinstall] npx playwright@${PW_VERSION} install chromium chromium-headless-shell …`);
+console.log("[playwright-postinstall] npm exec playwright install chromium chromium-headless-shell …");
 const res = spawnSync(
-  "npx",
-  ["-y", `playwright@${PW_VERSION}`, "install", "chromium", "chromium-headless-shell"],
-  { stdio: "inherit", shell: true, env: process.env },
+  "npm",
+  ["exec", "playwright", "install", "chromium", "chromium-headless-shell"],
+  {
+    stdio: "inherit",
+    shell: true,
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || "0" },
+  },
 );
 
 if (res.status !== 0) {
