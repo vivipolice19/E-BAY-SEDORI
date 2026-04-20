@@ -360,21 +360,76 @@ function CustomUrlPanel({
   selectedUrl: string;
 }) {
   const [customUrl, setCustomUrl] = useState("");
-  const [urlResult, setUrlResult] = useState<{ title: string; price: number; currency: string; platform: string; imageUrls?: string[]; error?: string } | null>(null);
+  type UrlResult = {
+    title: string;
+    price: number;
+    currency: string;
+    platform: string;
+    imageUrls?: string[];
+    sourceCondition?: string;
+    sourceDescription?: string;
+    ebayConditionMapped?: string;
+    error?: string;
+  };
+  const [urlResult, setUrlResult] = useState<UrlResult | null>(null);
+  const [bulkUrlsText, setBulkUrlsText] = useState("");
+  const [bulkResults, setBulkResults] = useState<Array<UrlResult & { url: string; priceInJpy: number }>>([]);
+  const [isBulkFetching, setIsBulkFetching] = useState(false);
+
+  const fetchUrlInfo = async (url: string): Promise<UrlResult> => {
+    const res = await fetch("/api/source-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error || "取得失敗"); }
+    return res.json();
+  };
 
   const urlMutation = useMutation({
     mutationFn: async (url: string) => {
+      return fetchUrlInfo(url);
+    },
+    onSuccess: (data) => setUrlResult(data),
+    onError: (e: any) => setUrlResult({ title: "", price: 0, currency: "JPY", platform: "カスタムURL", error: e.message }),
+  });
+
+  const handleBulkFetch = async () => {
+    const matches = Array.from(
+      new Set(
+        (bulkUrlsText.match(/https?:\/\/[^\s"'<>]+/g) || [])
+          .map((u) => u.replace(/[),.;]+$/, "").trim())
+          .filter((u) => u.startsWith("http")),
+      ),
+    ).slice(0, 15);
+    if (matches.length === 0) return;
+    setIsBulkFetching(true);
+    setBulkResults([]);
+    const out: Array<UrlResult & { url: string; priceInJpy: number }> = [];
+    for (const url of matches) {
       const res = await fetch("/api/source-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.error || "取得失敗"); }
-      return res.json();
-    },
-    onSuccess: (data) => setUrlResult(data),
-    onError: (e: any) => setUrlResult({ title: "", price: 0, currency: "JPY", platform: "カスタムURL", error: e.message }),
-  });
+      if (!res.ok) {
+        let msg = "取得失敗";
+        try { const e = await res.json(); msg = e.error || msg; } catch {}
+        out.push({ url, title: "", price: 0, currency: "JPY", platform: "カスタムURL", error: msg, priceInJpy: 0 });
+        continue;
+      }
+      const data = await res.json() as UrlResult;
+      const jpy = data.currency === "USD" ? Math.round(data.price * exchangeRate) : data.price;
+      out.push({ ...data, url, priceInJpy: jpy || 0 });
+    }
+    out.sort((a, b) => {
+      const av = a.priceInJpy > 0 ? a.priceInJpy : Number.MAX_SAFE_INTEGER;
+      const bv = b.priceInJpy > 0 ? b.priceInJpy : Number.MAX_SAFE_INTEGER;
+      return av - bv;
+    });
+    setBulkResults(out);
+    setIsBulkFetching(false);
+  };
 
   const handleFetch = () => {
     const trimmed = customUrl.trim();
@@ -438,6 +493,73 @@ function CustomUrlPanel({
           )}
         </div>
       )}
+      <div className="mt-2 pt-2 border-t border-border space-y-1.5">
+        <p className="text-[11px] font-medium text-foreground">Google画像検索で見つけたURLを一括解析</p>
+        <textarea
+          value={bulkUrlsText}
+          onChange={(e) => setBulkUrlsText(e.target.value)}
+          placeholder={"Google画像検索結果などのURLを複数行で貼り付け\nhttps://jp.mercari.com/item/...\nhttps://auctions.yahoo.co.jp/...\n..."}
+          className="w-full min-h-[84px] resize-y rounded-md border border-border bg-background px-2 py-1.5 text-[11px]"
+          data-testid="textarea-bulk-source-urls"
+        />
+        <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-[11px]"
+            onClick={handleBulkFetch}
+            disabled={isBulkFetching || !bulkUrlsText.trim()}
+            data-testid="button-bulk-fetch-urls"
+          >
+            {isBulkFetching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "URL一覧を解析"}
+          </Button>
+          <span className="text-[10px] text-muted-foreground self-center">最大15件 / 価格順</span>
+        </div>
+        {bulkResults.length > 0 && (
+          <div className="max-h-44 overflow-y-auto space-y-1">
+            {bulkResults.map((r, idx) => {
+              const good = r.priceInJpy > 0 && r.priceInJpy <= limitBreakEven;
+              const selected = selectedUrl === r.url && r.priceInJpy > 0;
+              return (
+                <div key={`${r.url}-${idx}`} className={`rounded border p-1.5 text-[11px] ${r.error ? "border-destructive/40 bg-destructive/5" : selected ? "border-primary bg-primary/5" : good ? "border-green-300 bg-green-50 dark:bg-green-950/30" : "border-border bg-background"}`}>
+                  {r.error ? (
+                    <p className="text-destructive">⚠ {r.error}</p>
+                  ) : (
+                    <>
+                      <p className="text-[10px] text-muted-foreground">{r.platform}</p>
+                      <p className="line-clamp-2 text-foreground">{r.title || r.url}</p>
+                      {r.sourceCondition && <p className="text-[10px] text-amber-700 dark:text-amber-300">状態: {r.sourceCondition}{r.ebayConditionMapped ? ` → eBay ${r.ebayConditionMapped}` : ""}</p>}
+                      <div className="flex items-center justify-between gap-2 mt-1">
+                        <span className="font-bold">
+                          {r.priceInJpy > 0 ? `¥${r.priceInJpy.toLocaleString()}` : "価格不明"}
+                          {r.currency === "USD" && r.price > 0 && <span className="text-[10px] text-muted-foreground ml-1">(${r.price.toFixed(2)})</span>}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => window.open(r.url, "_blank")}
+                            className="text-muted-foreground hover:text-foreground"
+                            data-testid={`button-open-bulk-url-${idx}`}
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                          </button>
+                          <button
+                            onClick={() => r.priceInJpy > 0 && onSelectItem(r.priceInJpy, r.platform, r.url, r.imageUrls)}
+                            disabled={r.priceInJpy <= 0}
+                            className={`text-[10px] px-2 py-0.5 rounded ${selected ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80 text-foreground"} disabled:opacity-50`}
+                            data-testid={`button-select-bulk-url-${idx}`}
+                          >
+                            {selected ? "選択済み" : "使う"}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
       <p className="text-[10px] text-muted-foreground mt-1">Amazon JP・楽天・ヤフオク・メルカリ等どのURLでも対応</p>
     </div>
   );
