@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,8 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useToast } from "@/hooks/use-toast";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import type { EbayItem, AppSettings, EbaySoldResearchMeta } from "@shared/schema";
 import {
   Search, Bookmark, ExternalLink, Package, Tag,
@@ -1215,16 +1215,6 @@ function EbayItemCard({ item, selected, onResearch, onOpenEbay }: {
         </div>
       </div>
 
-      {item.imageUrl && (
-        <div
-          className="px-2 py-1.5 bg-violet-50/80 dark:bg-violet-950/40 border-b border-violet-200/80 dark:border-violet-800"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <p className="text-[9px] text-violet-800 dark:text-violet-200 font-medium mb-1">画像で仕入先検索</p>
-          <EbayReverseImageTools imageUrl={item.imageUrl} variant="card" />
-        </div>
-      )}
-
       <CardContent className="p-3 flex flex-col flex-1 gap-2">
         <p className="text-xs font-medium text-foreground leading-snug line-clamp-2 hover:text-primary cursor-pointer transition-colors"
           onClick={onOpenEbay} data-testid={`product-title-${item.itemId}`}>{item.title}</p>
@@ -1264,7 +1254,7 @@ function EbayItemCard({ item, selected, onResearch, onOpenEbay }: {
 }
 
 export default function EbaySearch() {
-  const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [tab, setTab] = useState("keyword");
   const [keyword, setKeyword] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -1278,8 +1268,7 @@ export default function EbaySearch() {
   const [showFilters, setShowFilters] = useState(false);
   const [soldOnly, setSoldOnly] = useState(false);
   const [soldWindowDays, setSoldWindowDays] = useState("90");
-  const [selectedItem, setSelectedItem] = useState<EbayItem | null>(null);
-  const [savingId, setSavingId] = useState<string | null>(null);
+  const [researchingItemId, setResearchingItemId] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState(POPULAR_CATEGORIES[0]);
   // Pagination offsets
   const [searchOffset, setSearchOffset] = useState(0);
@@ -1321,7 +1310,7 @@ export default function EbaySearch() {
   const handleClearSearch = () => {
     setKeyword(""); setSearchQuery(""); setSortOrder("BestMatch"); setCondition("all");
     setMinPrice(""); setMaxPrice(""); setDaysListed("0"); setCategoryId("");
-    setActiveCategoryName("すべてのカテゴリ"); setSelectedItem(null); setSearchOffset(0);
+    setActiveCategoryName("すべてのカテゴリ"); setResearchingItemId(null); setSearchOffset(0);
     setSoldWindowDays("90");
     setSmartBoost(true);
     queryClient.removeQueries({ queryKey: ["/api/ebay/search"] });
@@ -1398,43 +1387,6 @@ export default function EbaySearch() {
   const activeItems = tab === "keyword" ? searchItems : popularItems;
   const isLoading = tab === "keyword" ? searchLoading : popularLoading;
 
-  const saveMutation = useMutation({
-    mutationFn: async ({ item, sourcePrice, sourcePlatform, sourceUrl, sourceImageUrls }: {
-      item: EbayItem; sourcePrice?: number; sourcePlatform?: string; sourceUrl?: string; sourceImageUrls?: string[];
-    }) => {
-      const exchangeRate = settings?.exchangeRate || 150;
-      const ebayFeeRate = settings?.ebayFeeRate || 13.25;
-      const otherFees = settings?.otherFees || 500;
-      const fwdDomestic = settings?.forwardingDomesticShipping ?? 800;
-      const fwdAgent = settings?.forwardingAgentFee ?? 500;
-      const fwdIntlBase = settings?.forwardingIntlBase ?? 2000;
-      const fwdIntlPerGram = settings?.forwardingIntlPerGram ?? 3;
-      const defaultWeight = 300;
-      const fwdIntl = fwdIntlBase + Math.round(defaultWeight * fwdIntlPerGram);
-      const forwardingCost = fwdDomestic + fwdAgent + fwdIntl;
-      const ebayPriceJpy = Math.round(item.price * exchangeRate);
-      const ebayFee = Math.round(ebayPriceJpy * (ebayFeeRate / 100));
-      const netFromEbay = ebayPriceJpy - ebayFee - forwardingCost - otherFees;
-      const profit = sourcePrice !== undefined ? netFromEbay - sourcePrice : undefined;
-      const profitRate = profit !== undefined && ebayPriceJpy > 0 ? (profit / ebayPriceJpy) * 100 : undefined;
-      return apiRequest("POST", "/api/products", {
-        name: item.title, ebayItemId: item.itemId, ebayPrice: item.price, ebayPriceJpy,
-        ebayUrl: item.itemUrl, ebayCategory: item.category, ebayCondition: item.condition,
-        ebayImageUrl: item.imageUrl, sourcePrice, sourcePlatform, sourceUrl, sourceImageUrls,
-        profit, profitRate, forwardingCost,
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: "保存しました", description: "保存リストに追加しました" });
-      setSavingId(null);
-    },
-    onError: (e: any) => {
-      toast({ title: "エラー", description: e.message, variant: "destructive" });
-      setSavingId(null);
-    },
-  });
-
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (keyword.trim()) { setSearchQuery(keyword.trim()); setSelectedItem(null); setSearchOffset(0); }
@@ -1443,9 +1395,19 @@ export default function EbaySearch() {
   const handleCategoryClick = (cat: { id: string; name: string }) => {
     setCategoryId(cat.id);
     setActiveCategoryName(cat.name);
-    setSelectedItem(null);
+    setResearchingItemId(null);
     setSearchOffset(0);
     if (!keyword.trim()) setSearchQuery("");
+  };
+
+  const openManualResearch = (item: EbayItem) => {
+    setResearchingItemId(item.itemId);
+    const params = new URLSearchParams();
+    params.set("ebayUrl", item.itemUrl);
+    params.set("title", item.title);
+    if (item.imageUrl) params.set("imageUrl", item.imageUrl);
+    params.set("autoFetch", "1");
+    setLocation(`/research?${params.toString()}`);
   };
 
   // Pagination helpers
@@ -1458,7 +1420,7 @@ export default function EbaySearch() {
     <div className="h-full flex flex-col">
       <div className="flex-1 overflow-hidden">
         <div className="h-full flex flex-col px-4 py-3 gap-3">
-          <Tabs value={tab} onValueChange={(v) => { setTab(v); setSelectedItem(null); }}>
+          <Tabs value={tab} onValueChange={(v) => { setTab(v); setResearchingItemId(null); }}>
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <h1 className="text-lg font-bold text-foreground whitespace-nowrap">eBay商品検索</h1>
@@ -1611,7 +1573,7 @@ export default function EbaySearch() {
                     <span className="text-xs text-muted-foreground self-center">クイック：</span>
                     {QUICK_KEYWORDS.map((kw) => (
                       <Button key={kw} variant="outline" size="sm" type="button" className="h-7 text-xs"
-                        onClick={() => { setKeyword(kw); setSearchQuery(kw); setSelectedItem(null); }}
+                        onClick={() => { setKeyword(kw); setSearchQuery(kw); setResearchingItemId(null); }}
                         data-testid={`quick-keyword-${kw}`}>{kw}</Button>
                     ))}
                   </div>
@@ -1634,7 +1596,7 @@ export default function EbaySearch() {
                 {POPULAR_CATEGORIES.map((cat) => (
                   <Button key={cat.id} variant={selectedCategory.id === cat.id ? "default" : "outline"}
                     size="sm" className="h-7 text-xs"
-                    onClick={() => { setSelectedCategory(cat); setSelectedItem(null); setPopularOffset(0); }}
+                    onClick={() => { setSelectedCategory(cat); setResearchingItemId(null); setPopularOffset(0); }}
                     data-testid={`category-${cat.id}`}>{cat.name}</Button>
                 ))}
                 <Button variant="outline" size="sm" className="h-7 text-xs gap-1 ml-auto"
@@ -1747,11 +1709,11 @@ export default function EbaySearch() {
                       <span><span className="font-semibold">バリエーション有り</span>の商品は、その選択バリエーション（色・サイズ等）の価格を表示しています。eBayで確認すると他のバリエーション価格が表示される場合があります。</span>
                     </div>
                   )}
-                  <div className={`grid gap-3 ${selectedItem ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"}`}>
+                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                     {activeItems.map((item) => (
-                      <EbayItemCard key={item.itemId} item={item} selected={selectedItem?.itemId === item.itemId}
+                      <EbayItemCard key={item.itemId} item={item} selected={researchingItemId === item.itemId}
                         onOpenEbay={(e) => { e.stopPropagation(); window.open(item.itemUrl, "_blank"); }}
-                        onResearch={() => setSelectedItem(selectedItem?.itemId === item.itemId ? null : item)} />
+                        onResearch={() => openManualResearch(item)} />
                     ))}
                   </div>
                   {/* Pagination */}
@@ -1782,36 +1744,6 @@ export default function EbaySearch() {
               )}
             </div>
 
-            {/* Source Research Side Panel */}
-            {selectedItem && (
-              <div className="w-[440px] flex-shrink-0 overflow-y-auto">
-                <Card className="border-primary/40 h-fit">
-                  <CardHeader className="pb-2 pt-3 px-4 border-b border-border">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-sm flex items-center gap-2 text-primary">
-                        <Store className="w-4 h-4" />仕入れリサーチ
-                      </CardTitle>
-                      <Button variant="ghost" size="sm"
-                        className="h-7 text-xs gap-1 text-muted-foreground hover:text-foreground"
-                        onClick={() => setSelectedItem(null)}
-                        data-testid="button-close-panel">
-                        <X className="w-3.5 h-3.5" />← 検索に戻る
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground truncate mt-0.5">{selectedItem.title}</p>
-                  </CardHeader>
-                  <CardContent className="px-4 pb-4">
-                    <SourcePanel item={selectedItem} settings={settings}
-                      onSave={(item, sp, platform, sourceUrl, sourceImageUrls) => {
-                        setSavingId(item.itemId);
-                        saveMutation.mutate({ item, sourcePrice: sp, sourcePlatform: platform, sourceUrl, sourceImageUrls });
-                      }}
-                      isSaving={savingId === selectedItem.itemId && saveMutation.isPending}
-                      onClose={() => setSelectedItem(null)} />
-                  </CardContent>
-                </Card>
-              </div>
-            )}
           </div>
         </div>
       </div>

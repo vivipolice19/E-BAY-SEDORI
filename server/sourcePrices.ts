@@ -728,8 +728,8 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     const isYahooAuction = targetUrl.includes("page.auctions.yahoo.co.jp") || targetUrl.includes("yahoo.co.jp/item/");
     const isAmazon = targetUrl.includes("amazon.co.jp") || targetUrl.includes("amazon.com");
 
-    const waitCondition = isAmazon ? "networkidle" : "domcontentloaded";
-    const extraWait = isMercariItem ? 4000 : isYahooAuction ? 3000 : isAmazon ? 3000 : 2000;
+    const waitCondition = "domcontentloaded";
+    const extraWait = isMercariItem ? 1200 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
 
     await page.goto(targetUrl, { waitUntil: waitCondition as any, timeout: 35000 });
     await sleep(extraWait);

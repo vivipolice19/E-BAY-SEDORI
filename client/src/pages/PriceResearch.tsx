@@ -271,6 +271,29 @@ export default function PriceResearch() {
     onError: (e: any) => setEbayResult({ type: "search", keywords: "", error: e.message }),
   });
 
+  // eBay検索ページから遷移したURLを自動反映（?ebayUrl=...）
+  const prefillHandledRef = useRef(false);
+  useEffect(() => {
+    if (prefillHandledRef.current) return;
+    prefillHandledRef.current = true;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const fromEbayUrl = (params.get("ebayUrl") || "").trim();
+      if (!fromEbayUrl) return;
+      setEbayUrl(fromEbayUrl);
+      const titleFromSearch = (params.get("title") || "").trim();
+      if (titleFromSearch) setProductName(titleFromSearch.slice(0, 60));
+      const autoFetch = params.get("autoFetch") !== "0";
+      if (autoFetch && fromEbayUrl.includes("ebay.")) {
+        ebayMutation.mutate(fromEbayUrl);
+      }
+      // 手動リサーチ画面を再読み込みしても同じ自動実行を繰り返さない
+      window.history.replaceState({}, "", "/research");
+    } catch {
+      // noop
+    }
+  }, [ebayMutation]);
+
   // Manual market (sold items) search mutation — for item-type results with no market data
   const marketSearchMutation = useMutation({
     mutationFn: async (keywords: string) => {
@@ -296,13 +319,23 @@ export default function PriceResearch() {
   // Source URL mutation
   const sourceMutation = useMutation({
     mutationFn: async (url: string) => {
-      const res = await fetch("/api/source-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-      });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.error || "取得失敗"); }
-      return res.json() as Promise<SourceUrlResult>;
+      const ac = new AbortController();
+      const tid = setTimeout(() => ac.abort(), 20_000);
+      try {
+        const res = await fetch("/api/source-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+          signal: ac.signal,
+        });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.error || "取得失敗"); }
+        return res.json() as Promise<SourceUrlResult>;
+      } catch (e: any) {
+        if (e?.name === "AbortError") throw new Error("URL取得がタイムアウトしました（20秒）。再試行してください。");
+        throw e;
+      } finally {
+        clearTimeout(tid);
+      }
     },
     onSuccess: (data) => {
       setSourceResult(data);
