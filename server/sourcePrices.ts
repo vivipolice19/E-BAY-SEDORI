@@ -1,6 +1,12 @@
 // Auto-fetch actual prices from Japanese sourcing sites using Playwright
 import { chromium, type Browser, type BrowserContext } from "playwright-core";
 import { execSync } from "child_process";
+import { existsSync } from "fs";
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** 全サイト合算の上限（無限グルグル防止） */
+const SOURCE_FETCH_TOTAL_TIMEOUT_MS = 50_000;
 
 export interface SourceItem {
   title: string;
@@ -20,53 +26,98 @@ export interface SourceResults {
   errors: Record<string, string>;
 }
 
-// Find system Chromium binary
-function getChromiumPath(): string {
-  try {
-    const path = execSync("which chromium 2>/dev/null || find /nix -name 'chromium' -type f 2>/dev/null | grep -v '.so' | head -1", { encoding: "utf-8" }).trim();
-    if (path) return path;
-  } catch {}
-  return "/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium";
+/**
+ * Chromium の実体パス（未設定なら Playwright のキャッシュ内蔵ブラウザを試す）
+ * Render 等: ビルドで `npx playwright@1.58.2 install chromium` を実行するとキャッシュに入る
+ */
+function resolveChromiumExecutable(): string | undefined {
+  const envPath =
+    (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || process.env.CHROME_PATH || "").trim();
+  if (envPath && existsSync(envPath)) return envPath;
+
+  const candidates: string[] = [];
+  if (process.platform === "win32") {
+    const pf = process.env.PROGRAMFILES || "C:\\Program Files";
+    const pfx86 = process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)";
+    const local = process.env.LOCALAPPDATA || "";
+    candidates.push(
+      `${pf}\\Google\\Chrome\\Application\\chrome.exe`,
+      `${pfx86}\\Google\\Chrome\\Application\\chrome.exe`,
+      `${local}\\Google\\Chrome\\Application\\chrome.exe`,
+    );
+  } else if (process.platform === "darwin") {
+    candidates.push(
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    );
+  } else {
+    candidates.push(
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/google-chrome",
+      "/usr/bin/chromium-browser",
+      "/usr/bin/chromium",
+    );
+  }
+
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
+  }
+
+  if (process.platform !== "win32") {
+    try {
+      const path = execSync(
+        "command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null || command -v google-chrome-stable 2>/dev/null || true",
+        { encoding: "utf-8", shell: "/bin/sh", timeout: 5000 },
+      ).trim();
+      if (path) return path;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return undefined;
 }
 
 // Simple in-memory cache (keyword → { data, expiry })
 const cache = new Map<string, { data: SourceResults; expiry: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-// Browser singleton
+// Browser singleton（起動失敗でデッドロックしないよう単一 Promise）
 let browser: Browser | null = null;
-let browserInitializing = false;
-let browserInitQueue: Array<(b: Browser) => void> = [];
+let browserLaunchPromise: Promise<Browser> | null = null;
 
 async function getBrowser(): Promise<Browser> {
-  if (browser && browser.isConnected()) return browser;
+  if (browser?.isConnected()) return browser;
+  if (browserLaunchPromise) return browserLaunchPromise;
 
-  if (browserInitializing) {
-    return new Promise((resolve) => browserInitQueue.push(resolve));
+  browserLaunchPromise = (async () => {
+    const executablePath = resolveChromiumExecutable();
+    const launchOpts: Parameters<typeof chromium.launch>[0] = {
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--disable-extensions",
+        "--window-size=1280,900",
+      ],
+    };
+    if (executablePath) launchOpts.executablePath = executablePath;
+
+    const b = await chromium.launch(launchOpts);
+    browser = b;
+    b.on("disconnected", () => {
+      browser = null;
+    });
+    return b;
+  })();
+
+  try {
+    return await browserLaunchPromise;
+  } finally {
+    browserLaunchPromise = null;
   }
-
-  browserInitializing = true;
-  const executablePath = getChromiumPath();
-  browser = await chromium.launch({
-    executablePath,
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-infobars",
-      "--disable-extensions",
-      "--window-size=1280,900",
-    ],
-  });
-  browser.on("disconnected", () => {
-    browser = null;
-    browserInitializing = false;
-  });
-  browserInitializing = false;
-  browserInitQueue.forEach((fn) => fn(browser!));
-  browserInitQueue = [];
-  return browser;
 }
 
 async function newContext(): Promise<BrowserContext> {
@@ -88,7 +139,7 @@ async function fetchMercariPrices(keyword: string): Promise<SourceItem[]> {
   try {
     const url = `https://jp.mercari.com/search?keyword=${encodeURIComponent(keyword)}&status=on_sale&sort=price_asc`;
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(3000);
+    await sleep(3000);
 
     const items = await page.evaluate(() => {
       const results: Array<{ title: string; price: number; href: string; imgSrc: string }> = [];
@@ -185,7 +236,7 @@ async function fetchYahooShoppingPrices(keyword: string): Promise<SourceItem[]> 
   try {
     const url = `https://shopping.yahoo.co.jp/search?p=${encodeURIComponent(keyword)}&sort=price&order=a`;
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(3000);
+    await sleep(3000);
 
     const items = await page.evaluate(`(function() {
       var results = [];
@@ -280,7 +331,7 @@ async function fetchRakumaPrices(keyword: string): Promise<SourceItem[]> {
   try {
     const url = `https://rakuma.rakuten.co.jp/search/?keyword=${encodeURIComponent(keyword)}&order=price_asc`;
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(3500);
+    await sleep(3500);
 
     const items = await page.evaluate(`(function() {
       var results = [];
@@ -334,7 +385,7 @@ async function fetchSurugayaPrices(keyword: string): Promise<SourceItem[]> {
   try {
     const url = `https://www.surugaya.co.jp/search/?q=${encodeURIComponent(keyword)}&type=0`;
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(2500);
+    await sleep(2500);
 
     const items = await page.evaluate(`(function() {
       var results = [];
@@ -382,14 +433,7 @@ async function fetchSurugayaPrices(keyword: string): Promise<SourceItem[]> {
   }
 }
 
-export async function fetchSourcePrices(keyword: string): Promise<SourceResults> {
-  // Check cache
-  const cached = cache.get(keyword);
-  if (cached && cached.expiry > Date.now()) {
-    console.log(`[SourcePrices] Cache hit for "${keyword}"`);
-    return cached.data;
-  }
-
+async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
   const errors: Record<string, string> = {};
   console.log(`[SourcePrices] Fetching prices for "${keyword}"...`);
 
@@ -425,12 +469,50 @@ export async function fetchSourcePrices(keyword: string): Promise<SourceResults>
     errors,
   };
 
-  // Cache result
   cache.set(keyword, { data: result, expiry: Date.now() + CACHE_TTL_MS });
   console.log(
     `[SourcePrices] Done: ${mercariItems.length} mercari, ${yahooItems.length} yahoo, ${yahooShoppingItems.length} yahooShopping, ${rakumaItems.length} rakuma, ${surugayaItems.length} surugaya items`
   );
   return result;
+}
+
+export async function fetchSourcePrices(keyword: string): Promise<SourceResults> {
+  const cached = cache.get(keyword);
+  if (cached && cached.expiry > Date.now()) {
+    console.log(`[SourcePrices] Cache hit for "${keyword}"`);
+    return cached.data;
+  }
+
+  const empty: SourceResults = {
+    mercari: [],
+    yahoo: [],
+    yahooShopping: [],
+    rakuma: [],
+    surugaya: [],
+    errors: {},
+  };
+
+  try {
+    return await Promise.race([
+      fetchSourcePricesCore(keyword),
+      new Promise<SourceResults>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `仕入れ検索が ${SOURCE_FETCH_TOTAL_TIMEOUT_MS / 1000} 秒以内に終わりませんでした。Chromium / Playwright の設定を確認するか、時間をおいて再試行してください。`,
+              ),
+            ),
+          SOURCE_FETCH_TOTAL_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    console.error(`[SourcePrices] Failed for "${keyword}":`, msg);
+    empty.errors["全体"] = msg;
+    return empty;
+  }
 }
 
 export function calcPriceStats(items: SourceItem[]) {
@@ -650,7 +732,7 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     const extraWait = isMercariItem ? 4000 : isYahooAuction ? 3000 : isAmazon ? 3000 : 2000;
 
     await page.goto(targetUrl, { waitUntil: waitCondition as any, timeout: 35000 });
-    await page.waitForTimeout(extraWait);
+    await sleep(extraWait);
 
     // For Mercari items, wait for price element
     if (isMercariItem) {

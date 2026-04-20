@@ -328,11 +328,21 @@ export default function PriceResearch() {
   const { data: sourcePriceData, isLoading: sourcePriceLoading, isError: sourcePriceError, refetch: refetchSourcePrices } = useQuery<SourceApiResponse>({
     queryKey: ["/api/source-prices", fetchedKeyword],
     queryFn: async () => {
-      const res = await fetch(`/api/source-prices/${encodeURIComponent(fetchedKeyword)}`);
-      if (!res.ok) throw new Error("取得エラー");
-      return res.json();
+      const ac = new AbortController();
+      const tid = setTimeout(() => ac.abort(), 55_000);
+      try {
+        const res = await fetch(`/api/source-prices/${encodeURIComponent(fetchedKeyword)}`, { signal: ac.signal });
+        if (!res.ok) throw new Error("取得エラー");
+        return res.json();
+      } catch (e: any) {
+        if (e?.name === "AbortError") throw new Error("仕入れ検索がタイムアウトしました。サーバーに Chromium が無い可能性があります。");
+        throw e;
+      } finally {
+        clearTimeout(tid);
+      }
     },
     staleTime: 5 * 60 * 1000,
+    retry: false,
     enabled: !!fetchedKeyword,
   });
 

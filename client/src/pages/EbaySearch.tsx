@@ -568,11 +568,21 @@ function SourcePanel({
   const { data: priceData, isLoading: priceLoading, refetch: refetchPrices, isError: priceError } = useQuery<SourceApiResponse>({
     queryKey: ["/api/source-prices", fetchKeyword],
     queryFn: async () => {
-      const res = await fetch(`/api/source-prices/${encodeURIComponent(fetchKeyword)}`);
-      if (!res.ok) throw new Error("取得エラー");
-      return res.json();
+      const ac = new AbortController();
+      const tid = setTimeout(() => ac.abort(), 55_000);
+      try {
+        const res = await fetch(`/api/source-prices/${encodeURIComponent(fetchKeyword)}`, { signal: ac.signal });
+        if (!res.ok) throw new Error("取得エラー");
+        return res.json();
+      } catch (e: any) {
+        if (e?.name === "AbortError") throw new Error("仕入れ検索がタイムアウトしました。サーバーに Chromium が無い可能性があります（Render ではビルドに playwright install を追加）。");
+        throw e;
+      } finally {
+        clearTimeout(tid);
+      }
     },
     staleTime: 5 * 60 * 1000,
+    retry: false,
     enabled: !!fetchKeyword,
   });
 
@@ -801,9 +811,18 @@ function SourcePanel({
               </div>
             )}
             {allItems.length === 0 && (
-              <p className="text-xs text-muted-foreground text-center py-2">
-                商品が見つかりませんでした。日本語キーワードで試してみてください。
-              </p>
+              <div className="text-xs text-center py-2 space-y-1">
+                {priceData.errors?.["全体"] ? (
+                  <p className="text-destructive font-medium">{priceData.errors["全体"]}</p>
+                ) : (
+                  <p className="text-muted-foreground">商品が見つかりませんでした。日本語キーワードで試してみてください。</p>
+                )}
+                {priceData.errors?.["全体"] && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Render ではビルドに <code className="bg-muted px-1 rounded">npm run playwright:install-chromium</code> を含めると Chromium が入ります。
+                  </p>
+                )}
+              </div>
             )}
 
             {/* Mercari */}
