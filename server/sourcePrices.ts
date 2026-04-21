@@ -562,31 +562,75 @@ async function fetchSurugayaPrices(keyword: string): Promise<SourceItem[]> {
   }
 }
 
+function buildKeywordCandidates(raw: string): string[] {
+  const base = (raw || "").replace(/\s+/g, " ").trim();
+  if (!base) return [];
+
+  const stripped = base
+    .replace(/[【】\[\]()（）「」]/g, " ")
+    .replace(/(かわいい|限定|新品|美品|公式|コラボ|日本|ジャパン|送料無料|即購入可|タグ付き)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const tokens = stripped
+    .split(/[\/|｜,，・\-\s]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+
+  const cands: string[] = [];
+  const push = (s: string) => {
+    const v = s.replace(/\s+/g, " ").trim().slice(0, 60);
+    if (v && !cands.includes(v)) cands.push(v);
+  };
+
+  push(base);
+  push(stripped);
+  if (tokens.length >= 2) push(tokens.slice(0, 3).join(" "));
+  if (tokens.length >= 1) push(tokens.slice(0, 2).join(" "));
+  if (tokens.length >= 1) push(tokens[0]);
+
+  return cands.slice(0, 4);
+}
+
+async function fetchWithKeywordFallback(
+  platformLabel: string,
+  fetcher: (kw: string) => Promise<SourceItem[]>,
+  candidates: string[],
+  errors: Record<string, string>,
+): Promise<SourceItem[]> {
+  let lastErr = "";
+  for (const kw of candidates) {
+    try {
+      const items = await fetcher(kw);
+      if (items.length > 0) {
+        if (kw !== candidates[0]) {
+          console.log(`[SourcePrices] ${platformLabel} fallback hit: "${kw}" (${items.length})`);
+        }
+        return items;
+      }
+    } catch (e: any) {
+      lastErr = String(e?.message || e);
+    }
+  }
+  if (lastErr) errors[platformLabel] = lastErr;
+  return [];
+}
+
 async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
   const errors: Record<string, string> = {};
   console.log(`[SourcePrices] Fetching prices for "${keyword}"...`);
+  const keywordCandidates = buildKeywordCandidates(keyword);
+  if (keywordCandidates.length === 0) {
+    return { mercari: [], yahoo: [], yahooShopping: [], rakuma: [], surugaya: [], errors: {} };
+  }
+  console.log(`[SourcePrices] Keyword candidates: ${keywordCandidates.join(" | ")}`);
 
   const [mercariItems, yahooItems, yahooShoppingItems, rakumaItems, surugayaItems] = await Promise.all([
-    fetchMercariPrices(keyword).catch((e) => {
-      errors["メルカリ"] = String(e.message || e);
-      return [] as SourceItem[];
-    }),
-    fetchYahooPrices(keyword).catch((e) => {
-      errors["ヤフオク"] = String(e.message || e);
-      return [] as SourceItem[];
-    }),
-    fetchYahooShoppingPrices(keyword).catch((e) => {
-      errors["Yahoo!ショッピング"] = String(e.message || e);
-      return [] as SourceItem[];
-    }),
-    fetchRakumaPrices(keyword).catch((e) => {
-      errors["ラクマ"] = String(e.message || e);
-      return [] as SourceItem[];
-    }),
-    fetchSurugayaPrices(keyword).catch((e) => {
-      errors["駿河屋"] = String(e.message || e);
-      return [] as SourceItem[];
-    }),
+    fetchWithKeywordFallback("メルカリ", fetchMercariPrices, keywordCandidates, errors),
+    fetchWithKeywordFallback("ヤフオク", fetchYahooPrices, keywordCandidates, errors),
+    fetchWithKeywordFallback("Yahoo!ショッピング", fetchYahooShoppingPrices, keywordCandidates, errors),
+    fetchWithKeywordFallback("ラクマ", fetchRakumaPrices, keywordCandidates, errors),
+    fetchWithKeywordFallback("駿河屋", fetchSurugayaPrices, keywordCandidates, errors),
   ]);
 
   const result: SourceResults = {
