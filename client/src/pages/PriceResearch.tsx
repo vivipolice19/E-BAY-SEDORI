@@ -422,13 +422,13 @@ export default function PriceResearch() {
     queryKey: ["/api/source-prices", fetchedKeyword],
     queryFn: async () => {
       const ac = new AbortController();
-      const tid = setTimeout(() => ac.abort(), 55_000);
+      const tid = setTimeout(() => ac.abort(), 80_000);
       try {
         const res = await fetch(`/api/source-prices/${encodeURIComponent(fetchedKeyword)}`, { signal: ac.signal });
         if (!res.ok) throw new Error("取得エラー");
         return res.json();
       } catch (e: any) {
-        if (e?.name === "AbortError") throw new Error("仕入れ検索がタイムアウトしました。サーバーに Chromium が無い可能性があります。");
+        if (e?.name === "AbortError") throw new Error("仕入れ検索がタイムアウトしました（80秒）。サーバー負荷や Playwright 待機で時間がかかっている可能性があります。");
         throw e;
       } finally {
         clearTimeout(tid);

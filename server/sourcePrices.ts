@@ -6,7 +6,7 @@ import { existsSync } from "fs";
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 全サイト合算の上限（無限グルグル防止） */
-const SOURCE_FETCH_TOTAL_TIMEOUT_MS = 50_000;
+const SOURCE_FETCH_TOTAL_TIMEOUT_MS = 75_000;
 
 export interface SourceItem {
   title: string;
@@ -138,27 +138,100 @@ async function fetchMercariPrices(keyword: string): Promise<SourceItem[]> {
   const page = await ctx.newPage();
   try {
     const url = `https://jp.mercari.com/search?keyword=${encodeURIComponent(keyword)}&status=on_sale&sort=price_asc`;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await sleep(3000);
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 45_000,
+      referer: "https://jp.mercari.com/",
+    });
+    await page
+      .waitForSelector('[data-testid="thumbnail-link"], a[href*="/item/"]', { timeout: 18_000 })
+      .catch(() => {});
+    await sleep(2500);
+    try {
+      await page.waitForFunction(
+        () => document.querySelectorAll('a[href*="/item/"]').length >= 2,
+        { timeout: 10_000 },
+      );
+    } catch {
+      /* 続行 */
+    }
+    await page.mouse.wheel(0, 600).catch(() => {});
+    await sleep(800);
 
     const items = await page.evaluate(() => {
       const results: Array<{ title: string; price: number; href: string; imgSrc: string }> = [];
-      const links = document.querySelectorAll('[data-testid="thumbnail-link"]');
-      links.forEach((link, i) => {
-        if (i >= 20) return;
-        const href = "https://jp.mercari.com" + link.getAttribute("href");
+      const seen = new Set<string>();
+
+      function absHref(h: string | null): string {
+        if (!h) return "";
+        if (h.startsWith("http")) return h.split("?")[0].replace(/\/$/, "");
+        if (h.startsWith("/item/")) return ("https://jp.mercari.com" + h.split("?")[0]).replace(/\/$/, "");
+        return "";
+      }
+
+      function imgFrom(link: Element): string {
+        const imgs = link.querySelectorAll("img");
+        for (let j = 0; j < imgs.length; j++) {
+          const el = imgs[j] as HTMLImageElement;
+          const s =
+            el.currentSrc ||
+            el.src ||
+            el.getAttribute("data-src") ||
+            el.getAttribute("data-original") ||
+            "";
+          if (s && s.startsWith("http") && !s.startsWith("data:")) return s;
+        }
+        return "";
+      }
+
+      function push(title: string, price: number, href: string, imgSrc: string) {
+        const t = title.replace(/\s+/g, " ").trim();
+        const key = href.replace(/\/$/, "");
+        if (!href || !t || price < 100 || seen.has(key)) return;
+        seen.add(key);
+        results.push({ title: t.substring(0, 120), price, href: key, imgSrc: imgSrc || "" });
+      }
+
+      // A: 従来の thumbnail-link + aria-label
+      document.querySelectorAll('[data-testid="thumbnail-link"]').forEach((link, i) => {
+        if (i >= 24) return;
+        const href = absHref(link.getAttribute("href"));
         const imgDiv = link.querySelector('[role="img"]');
         const ariaLabel = imgDiv ? imgDiv.getAttribute("aria-label") || "" : "";
-        const imgEl = link.querySelector("img");
-        const imgSrc = imgEl ? (imgEl as HTMLImageElement).src : "";
         const priceMatch = ariaLabel.match(/([\d,]+)円/);
         const price = priceMatch ? parseInt(priceMatch[1].replace(/,/g, ""), 10) : 0;
         const title = ariaLabel.replace(/の画像.*$/, "").trim();
-        if (price > 0 && title) {
-          results.push({ title, price, href, imgSrc });
-        }
+        push(title, price, href, imgFrom(link));
       });
-      return results;
+
+      // B: 商品リンク直取り（DOM 変更に強い）
+      document.querySelectorAll('a[href*="/item/"]').forEach((a, i) => {
+        if (results.length >= 20 || i >= 60) return;
+        const href = absHref((a as HTMLAnchorElement).getAttribute("href"));
+        if (!href.includes("/item/")) return;
+        const card = a.closest('[data-testid="item-cell"]') || a.closest("li") || a.parentElement;
+        const scope = card || a;
+        let title = "";
+        const nameEl = scope.querySelector('[class*="name"], [class*="Name"], [class*="title"]');
+        if (nameEl?.textContent) title = nameEl.textContent.trim();
+        if (!title) {
+          const al = scope.querySelector('[role="img"]')?.getAttribute("aria-label") || "";
+          title = al.replace(/の画像.*$/, "").replace(/[\d,]+円.*$/, "").trim();
+        }
+        if (!title) title = (scope.textContent || "").split("\n").map((s) => s.trim()).find((s) => s.length > 8) || "";
+        let price = 0;
+        const al2 = scope.querySelector('[role="img"]')?.getAttribute("aria-label") || "";
+        const pm = al2.match(/([\d,]+)円/);
+        if (pm) price = parseInt(pm[1].replace(/,/g, ""), 10);
+        if (price <= 0) {
+          const tx = scope.textContent || "";
+          const m2 = tx.match(/([\d,]+)\s*円/);
+          if (m2) price = parseInt(m2[1].replace(/,/g, ""), 10);
+        }
+        push(title, price, href, imgFrom(scope));
+      });
+
+      return results.slice(0, 20);
     });
 
     return items.map((item) => ({
@@ -235,8 +308,11 @@ async function fetchYahooShoppingPrices(keyword: string): Promise<SourceItem[]> 
   const page = await ctx.newPage();
   try {
     const url = `https://shopping.yahoo.co.jp/search?p=${encodeURIComponent(keyword)}&sort=price&order=a`;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await sleep(3000);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+    await sleep(2000);
+    await page.waitForSelector('a[href*="store.shopping.yahoo"], a[href*="shopping-item-reach"], img', { timeout: 12_000 }).catch(() => {});
+    await page.mouse.wheel(0, 900).catch(() => {});
+    await sleep(1200);
 
     const items = await page.evaluate(`(function() {
       var results = [];
@@ -251,12 +327,22 @@ async function fetchYahooShoppingPrices(keyword: string): Promise<SourceItem[]> 
         return (t || '').replace(/[\\d,]+円[^\\n]*/g,'').replace(/^PR\\s*/,'').replace(/送料[^\\n]*/g,'').replace(/（税込）[^\\n]*/g,'').replace(/\\s+/g,' ').trim().substring(0,80);
       };
 
+      var imgSrcFrom = function(root) {
+        if (!root) return '';
+        var imgs = root.querySelectorAll('img');
+        for (var k = 0; k < imgs.length; k++) {
+          var el = imgs[k];
+          var s = el.currentSrc || el.src || el.getAttribute('data-src') || el.getAttribute('data-lazy-src') || el.getAttribute('data-original') || '';
+          if (s && s.indexOf('http') === 0 && s.indexOf('data:') !== 0 && s.indexOf('spacer') < 0) return s;
+        }
+        return '';
+      };
+
       // Try structured product list first
-      var productItems = document.querySelectorAll('[data-yl-tracking-component-type="item"], .Product, li[class*="Product"]');
+      var productItems = document.querySelectorAll('[data-yl-tracking-component-type="item"], .Product, li[class*="Product"], li[class*="List"], article[class*="item"]');
       if (productItems.length > 0) {
         Array.from(productItems).forEach(function(item) {
           var priceEl = item.querySelector('[class*="price"], [class*="Price"]');
-          var imgEl = item.querySelector('img');
           var linkEl = item.querySelector('a[href*="store.shopping.yahoo"], a[href*="shopping-item-reach"]');
           if (!priceEl || !linkEl) return;
           var priceText = priceEl.textContent || '';
@@ -268,10 +354,31 @@ async function fetchYahooShoppingPrices(keyword: string): Promise<SourceItem[]> 
           var canon = canonHref(href);
           if (!href || seenHrefs.has(canon)) return;
           seenHrefs.add(canon);
-          var titleEl = item.querySelector('[class*="title"], [class*="Title"]');
+          var titleEl = item.querySelector('[class*="title"], [class*="Title"], h3, h2');
           var rawTitle = (titleEl && titleEl.textContent) ? titleEl.textContent : (item.textContent || '');
           var title = cleanTitle(rawTitle);
-          var imgSrc = imgEl ? imgEl.src : '';
+          var imgSrc = imgSrcFrom(item);
+          if (title && price > 0) results.push({ title: title, price: price, href: href, imgSrc: imgSrc });
+        });
+      }
+
+      // アンカー起点（レイアウト変更時）
+      if (results.length < 5) {
+        var anchors = document.querySelectorAll('a[href*="store.shopping.yahoo.co.jp"], a[href*="shopping-item-reach"]');
+        Array.from(anchors).forEach(function(a, idx) {
+          if (results.length >= 20 || idx > 50) return;
+          var href = a.href || '';
+          var canon = canonHref(href);
+          if (!href || seenHrefs.has(canon)) return;
+          var card = a.closest('li') || a.closest('article') || a.closest('[class*="item"]') || a.parentElement;
+          if (!card) return;
+          var priceText = (card.textContent || '').match(/([\\d,]+)\\s*円/);
+          if (!priceText) return;
+          var price = parseInt(priceText[1].replace(/,/g,''), 10);
+          if (!price || price <= 0) return;
+          seenHrefs.add(canon);
+          var title = cleanTitle(card.textContent || '');
+          var imgSrc = imgSrcFrom(card);
           if (title && price > 0) results.push({ title: title, price: price, href: href, imgSrc: imgSrc });
         });
       }
@@ -294,8 +401,7 @@ async function fetchYahooShoppingPrices(keyword: string): Promise<SourceItem[]> 
               if (!href2 || seenHrefs.has(canon2)) break;
               seenHrefs.add(canon2);
               var title2 = cleanTitle(cur.textContent || '');
-              var img2 = cur.querySelector('img');
-              var imgSrc2 = img2 ? img2.src : '';
+              var imgSrc2 = imgSrcFrom(cur);
               if (title2 && price2 > 0) { results.push({ title: title2, price: price2, href: href2, imgSrc: imgSrc2 }); break; }
             }
             cur = cur.parentElement;
@@ -330,8 +436,10 @@ async function fetchRakumaPrices(keyword: string): Promise<SourceItem[]> {
   const page = await ctx.newPage();
   try {
     const url = `https://rakuma.rakuten.co.jp/search/?keyword=${encodeURIComponent(keyword)}&order=price_asc`;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await sleep(3500);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+    await sleep(2200);
+    await page.mouse.wheel(0, 700).catch(() => {});
+    await sleep(1200);
 
     const items = await page.evaluate(`(function() {
       var results = [];
@@ -339,6 +447,16 @@ async function fetchRakumaPrices(keyword: string): Promise<SourceItem[]> {
       var cards = document.querySelectorAll('[data-testid="item-cell"], .sc-fzoLsD, li[class*="ItemCell"], li[class*="item"], .item-card');
       if (cards.length === 0) {
         cards = document.querySelectorAll('li a[href*="/item/"]');
+      }
+      function imgBest(el) {
+        if (!el) return '';
+        var imgs = el.querySelectorAll('img');
+        for (var k = 0; k < imgs.length; k++) {
+          var im = imgs[k];
+          var s = im.currentSrc || im.src || im.getAttribute('data-src') || im.getAttribute('data-lazy-src') || '';
+          if (s && s.indexOf('http') === 0 && s.indexOf('data:') !== 0) return s;
+        }
+        return '';
       }
       Array.from(cards).forEach(function(card, i) {
         if (i >= 20) return;
@@ -348,7 +466,6 @@ async function fetchRakumaPrices(keyword: string): Promise<SourceItem[]> {
         if (!href.includes('/item/')) return;
         var priceEl = card.querySelector('[class*="price"], [class*="Price"]');
         var titleEl = card.querySelector('[class*="name"], [class*="title"], [class*="Name"]');
-        var imgEl = card.querySelector('img');
         var priceText = priceEl ? (priceEl.textContent || '') : (card.textContent || '');
         var pm = priceText.match(/([\\d,]+)/);
         if (!pm) return;
@@ -356,7 +473,7 @@ async function fetchRakumaPrices(keyword: string): Promise<SourceItem[]> {
         if (!price || price <= 0) return;
         var title = titleEl ? (titleEl.textContent || '').trim() : '';
         if (!title) title = (card.getAttribute('aria-label') || '').replace(/の画像.*/, '').trim();
-        var imgSrc = imgEl ? imgEl.src : '';
+        var imgSrc = imgBest(card);
         if (price > 0) results.push({ title: title || href, price: price, href: href, imgSrc: imgSrc });
       });
       return results;
@@ -384,8 +501,10 @@ async function fetchSurugayaPrices(keyword: string): Promise<SourceItem[]> {
   const page = await ctx.newPage();
   try {
     const url = `https://www.surugaya.co.jp/search/?q=${encodeURIComponent(keyword)}&type=0`;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await sleep(2500);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+    await sleep(1800);
+    await page.mouse.wheel(0, 600).catch(() => {});
+    await sleep(1000);
 
     const items = await page.evaluate(`(function() {
       var results = [];
@@ -395,6 +514,16 @@ async function fetchSurugayaPrices(keyword: string): Promise<SourceItem[]> {
         // Fallback: look for links containing /item/
         cards = document.querySelectorAll('a[href*="/item/"]');
       }
+      function imgBest2(el) {
+        if (!el) return '';
+        var imgs = el.querySelectorAll('img');
+        for (var k = 0; k < imgs.length; k++) {
+          var im = imgs[k];
+          var s = im.currentSrc || im.src || im.getAttribute('data-src') || im.getAttribute('data-original') || '';
+          if (s && s.indexOf('http') === 0 && s.indexOf('data:') !== 0) return s;
+        }
+        return '';
+      }
       Array.from(cards).forEach(function(card, i) {
         if (i >= 20) return;
         var link = card.tagName === 'A' ? card : card.querySelector('a[href*="/item/"]');
@@ -403,7 +532,6 @@ async function fetchSurugayaPrices(keyword: string): Promise<SourceItem[]> {
         if (!href.includes('surugaya.co.jp')) return;
         var priceEl = card.querySelector('.price, .item-price, [class*="price"]');
         var titleEl = card.querySelector('.title, .item-name, [class*="title"], [class*="name"]');
-        var imgEl = card.querySelector('img');
         var priceText = priceEl ? (priceEl.textContent || '') : '';
         if (!priceText) priceText = (card.textContent || '');
         var pm = priceText.match(/([\\d,]+)/);
@@ -411,7 +539,7 @@ async function fetchSurugayaPrices(keyword: string): Promise<SourceItem[]> {
         var price = parseInt(pm[1].replace(/,/g,''), 10);
         if (!price || price <= 0 || price > 5000000) return;
         var title = titleEl ? (titleEl.textContent || '').trim() : (link.textContent || '').trim();
-        var imgSrc = imgEl ? imgEl.src : '';
+        var imgSrc = imgBest2(card);
         if (price > 0) results.push({ title: title || href, price: price, href: href, imgSrc: imgSrc });
       });
       return results;
@@ -782,6 +910,49 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
       }
     }
 
+    // メルカリ商品URL: 描画遅延時はスクロール後に再評価
+    if (isMercariItem && (result.price === 0 || !(result.imageUrls || []).length)) {
+      await sleep(2800);
+      await page.mouse.wheel(0, 900).catch(() => {});
+      try {
+        await page.waitForFunction(
+          () => /\d[\d,]*\s*円/.test(document.body?.innerText || ""),
+          { timeout: 10_000 },
+        );
+      } catch {
+        /* */
+      }
+      const retry = (await page.evaluate(evalScript)) as {
+        price: number;
+        currency: string;
+        title: string;
+        imageUrls: string[];
+      };
+      if (result.price === 0 && retry.price > 0) {
+        result.price = retry.price;
+        result.currency = retry.currency || "JPY";
+      }
+      if ((!result.title || result.title.length < 2) && retry.title) result.title = retry.title;
+      if ((retry.imageUrls || []).length > (result.imageUrls || []).length) result.imageUrls = retry.imageUrls;
+      if (result.price === 0) {
+        const fb2 = await page.evaluate(() => {
+          const lines = (document.body?.innerText || "").split(/\n/).map((s) => s.trim()).filter(Boolean);
+          const re = /^([\d,]+)\s*円$/;
+          for (const line of lines.slice(0, 120)) {
+            const m = line.match(re);
+            if (!m) continue;
+            const n = parseInt(m[1].replace(/,/g, ""), 10);
+            if (n >= 300 && n < 20_000_000) return n;
+          }
+          return 0;
+        });
+        if (fb2 > 0) {
+          result.price = fb2;
+          result.currency = "JPY";
+        }
+      }
+    }
+
     // For Mercari/Yahoo: scrape gallery + condition + description
     let sourceCondition;
     let sourceDescription;
@@ -791,8 +962,11 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     if (isMercariItem) {
       const mercariScript = "(function() { " +
         "var imgs = []; " +
-        "var els = document.querySelectorAll('picture img, [class*=\"Carousel\"] img, [class*=\"carousel\"] img, [class*=\"Gallery\"] img, [class*=\"ItemPhoto\"] img, [class*=\"merCarousel\"] img'); " +
-        "els.forEach(function(el) { var src = el.src || el.getAttribute('src') || ''; if (src && !src.startsWith('data:') && src.startsWith('http') && imgs.indexOf(src) < 0) imgs.push(src); }); " +
+        "var els = document.querySelectorAll('picture img, [class*=\"Carousel\"] img, [class*=\"carousel\"] img, [class*=\"Gallery\"] img, [class*=\"ItemPhoto\"] img, [class*=\"merCarousel\"] img, img[src*=\"mercdn\"], img[src*=\"mercari\"], meta[property=\"og:image\"]'); " +
+        "els.forEach(function(el) { " +
+        "  var src = el.tagName === 'META' ? (el.getAttribute('content') || '') : (el.currentSrc || el.src || el.getAttribute('data-src') || el.getAttribute('src') || ''); " +
+        "  if (src && !src.startsWith('data:') && src.startsWith('http') && imgs.indexOf(src) < 0) imgs.push(src); " +
+        "}); " +
         "var condition = ''; " +
         "var condKeywords = ['新品、未使用', '未使用に近い', '目立った傷や汚れなし', 'やや傷や汚れあり', '傷や汚れあり', '全体的に状態が悪い']; " +
         "var bodyText = document.body ? (document.body.innerText || '') : ''; " +

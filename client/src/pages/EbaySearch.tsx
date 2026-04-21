@@ -663,7 +663,7 @@ function SourcePanel({
     queryKey: ["/api/source-prices", fetchKeyword],
     queryFn: async () => {
       const ac = new AbortController();
-      const tid = setTimeout(() => ac.abort(), 55_000);
+      const tid = setTimeout(() => ac.abort(), 80_000);
       try {
         const res = await fetch(`/api/source-prices/${encodeURIComponent(fetchKeyword)}`, { signal: ac.signal });
         if (!res.ok) throw new Error("取得エラー");
