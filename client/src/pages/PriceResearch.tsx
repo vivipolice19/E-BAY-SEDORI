@@ -881,27 +881,18 @@ export default function PriceResearch() {
               <CardTitle className="text-sm flex items-center gap-1.5 text-orange-700 dark:text-orange-300">
                 <ShoppingCart className="w-4 h-4" />仕入れ価格リサーチ
               </CardTitle>
-              {/* Mode switcher */}
-              <div className="flex rounded-md border border-border overflow-hidden text-xs">
-                <button
-                  onClick={() => setSourceMode("keyword")}
-                  className={`px-3 py-1 flex items-center gap-1 transition-colors ${sourceMode === "keyword" ? "bg-orange-500 text-white" : "bg-background text-muted-foreground hover:bg-muted"}`}
-                  data-testid="button-source-mode-keyword">
-                  <Search className="w-3 h-3" />キーワード
-                </button>
-                <button
-                  onClick={() => setSourceMode("url")}
-                  className={`px-3 py-1 flex items-center gap-1 transition-colors ${sourceMode === "url" ? "bg-orange-500 text-white" : "bg-background text-muted-foreground hover:bg-muted"}`}
-                  data-testid="button-source-mode-url">
-                  <Link2 className="w-3 h-3" />URL
-                </button>
-              </div>
+              <span className="text-[10px] text-muted-foreground">
+                URL専用取得と相場リサーチを分離
+              </span>
             </div>
           </CardHeader>
           <CardContent className="px-4 pb-4 space-y-3">
 
-            {/* ---- KEYWORD MODE ---- */}
-            {sourceMode === "keyword" && (
+            {/* ---- B. 相場リサーチ（複数サイト） ---- */}
+            <div className="rounded-md border border-orange-200/70 dark:border-orange-800/50 p-2.5">
+              <div className="text-[11px] font-semibold text-orange-700 dark:text-orange-300 mb-2">
+                B. 相場リサーチ（キーワードで複数サイト比較）
+              </div>
               <>
                 <div className="flex gap-1.5">
                   <Input
@@ -1023,10 +1014,13 @@ export default function PriceResearch() {
                   </div>
                 )}
               </>
-            )}
+            </div>
 
-            {/* ---- URL MODE ---- */}
-            {sourceMode === "url" && (
+            {/* ---- A. URL専用取得 ---- */}
+            <div className="rounded-md border border-orange-300/80 dark:border-orange-700/60 p-2.5 bg-orange-50/30 dark:bg-orange-950/20">
+              <div className="text-[11px] font-semibold text-orange-800 dark:text-orange-200 mb-2">
+                A. URL専用（価格・画像・説明を自動取得）
+              </div>
               <>
                 <div className="flex gap-1.5">
                   <Input
@@ -1133,7 +1127,7 @@ export default function PriceResearch() {
                   </div>
                 )}
               </>
-            )}
+            </div>
 
             {/* Selected source price display */}
             {sourceOverrideJpy !== null && (
