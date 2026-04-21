@@ -90,14 +90,12 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
+  // reusePort は Linux/macOS のみ。Windows では ENOTSUP になる。
+  const listenOptions =
+    process.platform === "win32"
+      ? { port, host: "0.0.0.0" as const }
+      : { port, host: "0.0.0.0" as const, reusePort: true as const };
+  httpServer.listen(listenOptions, () => {
+    log(`serving on port ${port}`);
+  });
 })();

@@ -731,12 +731,12 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     const waitCondition = "domcontentloaded";
     const extraWait = isMercariItem ? 1200 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
 
-    await page.goto(targetUrl, { waitUntil: waitCondition as any, timeout: 35000 });
+    await page.goto(targetUrl, { waitUntil: waitCondition as any, timeout: 55_000 });
     await sleep(extraWait);
 
     // For Mercari items, wait for price element
     if (isMercariItem) {
-      await page.waitForSelector('[data-testid="price"], [class*="merPrice"], [class*="ItemPrice"]', { timeout: 5000 }).catch(() => {});
+      await page.waitForSelector('[data-testid="price"], [class*="merPrice"], [class*="ItemPrice"]', { timeout: 14_000 }).catch(() => {});
     }
     // For Yahoo Auctions, wait for price
     if (isYahooAuction) {

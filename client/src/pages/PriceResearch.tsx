@@ -257,15 +257,21 @@ export default function PriceResearch() {
     },
     onSuccess: (data) => {
       setEbayResult(data);
-      if (data.type === "item" && data.priceJpy) {
-        setEbayOverrideJpy(data.priceJpy);
-        setProductName(data.title || "");
-        if (!sourceKeyword && data.title) setSourceKeyword(data.title.slice(0, 40));
+      if (data.type === "item") {
+        if (data.priceJpy) setEbayOverrideJpy(data.priceJpy);
+        if (data.title) {
+          setProductName(data.title);
+          // 仕入れキーワードは eBay 商品と常に同期（localStorage の古い値で上書きされないようにする）
+          setSourceKeyword(data.title.slice(0, 60));
+        }
         // Auto-set weight from Item Specifics if available
         if (data.weightG && data.weightG > 0) setWeightG(data.weightG);
       } else if (data.type === "search" && data.avgJpy) {
         setEbayOverrideJpy(data.avgJpy);
-        if (data.keywords) { setProductName(data.keywords); if (!sourceKeyword) setSourceKeyword(data.keywords); }
+        if (data.keywords) {
+          setProductName(data.keywords);
+          setSourceKeyword(data.keywords.slice(0, 60));
+        }
       }
     },
     onError: (e: any) => setEbayResult({ type: "search", keywords: "", error: e.message }),
@@ -282,7 +288,11 @@ export default function PriceResearch() {
       if (!fromEbayUrl) return;
       setEbayUrl(fromEbayUrl);
       const titleFromSearch = (params.get("title") || "").trim();
-      if (titleFromSearch) setProductName(titleFromSearch.slice(0, 60));
+      if (titleFromSearch) {
+        setProductName(titleFromSearch.slice(0, 60));
+        setSourceKeyword(titleFromSearch.slice(0, 60));
+        setFetchedKeyword("");
+      }
       const autoFetch = params.get("autoFetch") !== "0";
       if (autoFetch && fromEbayUrl.includes("ebay.")) {
         ebayMutation.mutate(fromEbayUrl);
@@ -320,7 +330,8 @@ export default function PriceResearch() {
   const sourceMutation = useMutation({
     mutationFn: async (url: string) => {
       const ac = new AbortController();
-      const tid = setTimeout(() => ac.abort(), 20_000);
+      const SOURCE_URL_CLIENT_MS = 55_000;
+      const tid = setTimeout(() => ac.abort(), SOURCE_URL_CLIENT_MS);
       try {
         const res = await fetch("/api/source-url", {
           method: "POST",
@@ -331,7 +342,11 @@ export default function PriceResearch() {
         if (!res.ok) { const e = await res.json(); throw new Error(e.error || "取得失敗"); }
         return res.json() as Promise<SourceUrlResult>;
       } catch (e: any) {
-        if (e?.name === "AbortError") throw new Error("URL取得がタイムアウトしました（20秒）。再試行してください。");
+        if (e?.name === "AbortError") {
+          throw new Error(
+            `URL取得がタイムアウトしました（${SOURCE_URL_CLIENT_MS / 1000}秒）。サーバー負荷やページの重さで遅延している可能性があります。再試行してください。`,
+          );
+        }
         throw e;
       } finally {
         clearTimeout(tid);
