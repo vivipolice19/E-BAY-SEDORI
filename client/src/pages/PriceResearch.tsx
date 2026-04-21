@@ -257,9 +257,16 @@ export default function PriceResearch() {
   const netFromEbay = ebayPriceJpy - ebayFee - forwardingCost - otherFees;
   const breakEven = Math.max(0, netFromEbay);
 
+  /** 日本語比率（英語タイトルかどうかの判定用） */
+  const jpRatio = (s: string) => {
+    if (!s) return 0;
+    const m = s.match(/[\u3040-\u30ff\u4e00-\u9fff]/g);
+    return (m ? m.length : 0) / Math.max(s.length, 1);
+  };
+
   /** eBay タイトル → 和訳（英語時）→ 仕入れキーワード欄に反映し、そのまま仕入れ検索を走らせる */
   const translateAndSearchSourcingKeyword = useCallback(async (raw: string) => {
-    const kw = raw.trim().slice(0, 60);
+    const kw = raw.trim().slice(0, 120);
     if (!kw) return;
     setSourceMode("keyword");
     setIsTranslating(true);
@@ -271,16 +278,21 @@ export default function PriceResearch() {
       });
       if (res.ok) {
         const data = (await res.json()) as { text?: string; translated?: boolean };
-        const finalKw = data.translated && data.text ? data.text.trim().slice(0, 60) : kw;
+        const t = (data.text || "").trim();
+        // API が translated:false でも、本文に日本語が入っていれば採用（MyMemory の不整合対策）
+        const jaBetter =
+          t.length >= 2 &&
+          (jpRatio(t) >= 0.08 || jpRatio(t) > jpRatio(kw) + 0.03 || !!data.translated);
+        const finalKw = jaBetter ? t.slice(0, 60) : kw.slice(0, 60);
         setSourceKeyword(finalKw);
         setFetchedKeyword(finalKw);
       } else {
-        setSourceKeyword(kw);
-        setFetchedKeyword(kw);
+        setSourceKeyword(kw.slice(0, 60));
+        setFetchedKeyword(kw.slice(0, 60));
       }
     } catch {
-      setSourceKeyword(kw);
-      setFetchedKeyword(kw);
+      setSourceKeyword(kw.slice(0, 60));
+      setFetchedKeyword(kw.slice(0, 60));
     } finally {
       setIsTranslating(false);
     }
@@ -374,7 +386,7 @@ export default function PriceResearch() {
   const sourceMutation = useMutation({
     mutationFn: async (url: string) => {
       const ac = new AbortController();
-      const SOURCE_URL_CLIENT_MS = 55_000;
+      const SOURCE_URL_CLIENT_MS = 120_000;
       const tid = setTimeout(() => ac.abort(), SOURCE_URL_CLIENT_MS);
       try {
         const res = await fetch("/api/source-url", {
@@ -1033,7 +1045,7 @@ export default function PriceResearch() {
 
                 {sourceMutation.isPending && (
                   <p className="text-[11px] text-muted-foreground text-center py-2 animate-pulse">
-                    ページから価格を取得中... (最大約55秒)
+                    ページから価格を取得中... (最大約2分)
                   </p>
                 )}
 
