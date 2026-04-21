@@ -729,14 +729,26 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     const isAmazon = targetUrl.includes("amazon.co.jp") || targetUrl.includes("amazon.com");
 
     const waitCondition = "domcontentloaded";
-    const extraWait = isMercariItem ? 1200 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
+    const extraWait = isMercariItem ? 3800 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
 
-    await page.goto(targetUrl, { waitUntil: waitCondition as any, timeout: 55_000 });
+    await page.goto(targetUrl, {
+      waitUntil: waitCondition as any,
+      timeout: 55_000,
+      ...(isMercariItem ? { referer: "https://jp.mercari.com/" } : {}),
+    });
     await sleep(extraWait);
 
     // For Mercari items, wait for price element
     if (isMercariItem) {
-      await page.waitForSelector('[data-testid="price"], [class*="merPrice"], [class*="ItemPrice"]', { timeout: 14_000 }).catch(() => {});
+      await page.waitForSelector('[data-testid="price"], [class*="merPrice"], [class*="ItemPrice"], [class*="price"]', { timeout: 16_000 }).catch(() => {});
+      try {
+        await page.waitForFunction(
+          () => /\d[\d,]*\s*円/.test(document.body?.innerText || ""),
+          { timeout: 12_000 },
+        );
+      } catch {
+        /* 続行して評価スクリプトで拾う */
+      }
     }
     // For Yahoo Auctions, wait for price
     if (isYahooAuction) {
@@ -749,6 +761,26 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
 
     const evalScript = `${PRICE_EVAL_SCRIPT}(${JSON.stringify(targetUrl)})`;
     const result = await page.evaluate(evalScript) as { price: number; currency: string; title: string; imageUrls: string[] };
+
+    // メルカリはクライアント描画のため、構造化抽出が 0 でも本文から価格行を拾う
+    if (isMercariItem && result.price === 0) {
+      const fbPrice = await page.evaluate(() => {
+        const t = document.body?.innerText || "";
+        const lines = t.split(/\n/).map((s) => s.trim()).filter(Boolean);
+        const re = /^([\d,]+)\s*円$/;
+        for (const line of lines.slice(0, 100)) {
+          const m = line.match(re);
+          if (!m) continue;
+          const n = parseInt(m[1].replace(/,/g, ""), 10);
+          if (n >= 300 && n < 20_000_000) return n;
+        }
+        return 0;
+      });
+      if (fbPrice > 0) {
+        result.price = fbPrice;
+        result.currency = "JPY";
+      }
+    }
 
     // For Mercari/Yahoo: scrape gallery + condition + description
     let sourceCondition;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -112,6 +112,19 @@ interface EbayUrlResult {
   avgDaysToSell?: number;
   soldItems?: { title: string; priceJpy: number; imageUrl?: string; itemUrl: string; daysToSell?: number }[];
   error?: string;
+}
+
+/** 仕入れ候補の選択判定用（末尾スラッシュ・# の差で外れないようにする） */
+function normalizeSourceItemUrl(u: string): string {
+  try {
+    const x = new URL(u);
+    x.hash = "";
+    let s = x.href;
+    if (s.endsWith("/") && x.pathname.length > 1) s = s.slice(0, -1);
+    return s;
+  } catch {
+    return (u || "").trim();
+  }
 }
 
 interface SourceUrlResult {
@@ -244,6 +257,35 @@ export default function PriceResearch() {
   const netFromEbay = ebayPriceJpy - ebayFee - forwardingCost - otherFees;
   const breakEven = Math.max(0, netFromEbay);
 
+  /** eBay タイトル → 和訳（英語時）→ 仕入れキーワード欄に反映し、そのまま仕入れ検索を走らせる */
+  const translateAndSearchSourcingKeyword = useCallback(async (raw: string) => {
+    const kw = raw.trim().slice(0, 60);
+    if (!kw) return;
+    setSourceMode("keyword");
+    setIsTranslating(true);
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: kw }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { text?: string; translated?: boolean };
+        const finalKw = data.translated && data.text ? data.text.trim().slice(0, 60) : kw;
+        setSourceKeyword(finalKw);
+        setFetchedKeyword(finalKw);
+      } else {
+        setSourceKeyword(kw);
+        setFetchedKeyword(kw);
+      }
+    } catch {
+      setSourceKeyword(kw);
+      setFetchedKeyword(kw);
+    } finally {
+      setIsTranslating(false);
+    }
+  }, []);
+
   // eBay URL mutation
   const ebayMutation = useMutation({
     mutationFn: async (url: string) => {
@@ -261,16 +303,15 @@ export default function PriceResearch() {
         if (data.priceJpy) setEbayOverrideJpy(data.priceJpy);
         if (data.title) {
           setProductName(data.title);
-          // 仕入れキーワードは eBay 商品と常に同期（localStorage の古い値で上書きされないようにする）
-          setSourceKeyword(data.title.slice(0, 60));
+          void translateAndSearchSourcingKeyword(data.title);
         }
         // Auto-set weight from Item Specifics if available
         if (data.weightG && data.weightG > 0) setWeightG(data.weightG);
-      } else if (data.type === "search" && data.avgJpy) {
-        setEbayOverrideJpy(data.avgJpy);
+      } else if (data.type === "search") {
+        if (data.avgJpy) setEbayOverrideJpy(data.avgJpy);
         if (data.keywords) {
           setProductName(data.keywords);
-          setSourceKeyword(data.keywords.slice(0, 60));
+          void translateAndSearchSourcingKeyword(data.keywords);
         }
       }
     },
@@ -288,12 +329,15 @@ export default function PriceResearch() {
       if (!fromEbayUrl) return;
       setEbayUrl(fromEbayUrl);
       const titleFromSearch = (params.get("title") || "").trim();
+      const autoFetch = params.get("autoFetch") !== "0";
       if (titleFromSearch) {
         setProductName(titleFromSearch.slice(0, 60));
-        setSourceKeyword(titleFromSearch.slice(0, 60));
         setFetchedKeyword("");
+        // autoFetch で eBay を取る場合は onSuccess 側で和訳＋検索する（二重実行を避ける）
+        if (!autoFetch || !fromEbayUrl.includes("ebay.")) {
+          void translateAndSearchSourcingKeyword(titleFromSearch);
+        }
       }
-      const autoFetch = params.get("autoFetch") !== "0";
       if (autoFetch && fromEbayUrl.includes("ebay.")) {
         ebayMutation.mutate(fromEbayUrl);
       }
@@ -302,7 +346,7 @@ export default function PriceResearch() {
     } catch {
       // noop
     }
-  }, [ebayMutation]);
+  }, [ebayMutation, translateAndSearchSourcingKeyword]);
 
   // Manual market (sold items) search mutation — for item-type results with no market data
   const marketSearchMutation = useMutation({
@@ -443,35 +487,12 @@ export default function PriceResearch() {
     ? allSourceItems.filter((i) => i.price <= breakEven)
     : allSourceItems;
 
-  const triggerSourceSearch = async (keyword: string) => {
-    const kw = keyword.trim().slice(0, 60);
-    if (!kw) return;
-    setSourceMode("keyword");
-    setIsTranslating(true);
-    try {
-      const res = await fetch("/api/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: kw }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const finalKw = data.translated ? data.text.slice(0, 60) : kw;
-        setSourceKeyword(finalKw);
-        setFetchedKeyword(finalKw);
-      } else {
-        setSourceKeyword(kw);
-        setFetchedKeyword(kw);
-      }
-    } catch {
-      setSourceKeyword(kw);
-      setFetchedKeyword(kw);
-    } finally {
-      setIsTranslating(false);
-    }
+  const triggerSourceSearch = (keyword: string) => {
+    void translateAndSearchSourcingKeyword(keyword);
   };
 
   const handleSourceSelect = (item: SourceItem) => {
+    setManualSourceJpy("");
     setSourceOverrideJpy(item.price);
     setSelectedSourceUrl(item.url);
     setSelectedSourceImageUrls(item.imageUrl ? [item.imageUrl] : []);
@@ -514,18 +535,30 @@ export default function PriceResearch() {
                 {showProfitOnly ? "利益商品なし" : "結果なし"}
               </p>
             ) : displayItems.map((item, i) => {
-              const isSelected = selectedSourceUrl === item.url && sourceOverrideJpy === item.price;
+              const isSelected =
+                normalizeSourceItemUrl(selectedSourceUrl) === normalizeSourceItemUrl(item.url) &&
+                sourceOverrideJpy !== null &&
+                Number(sourceOverrideJpy) === Number(item.price);
               const isProfitable = breakEven > 0 ? item.price <= breakEven : true;
               return (
-                <div key={i}
-                  className={`flex items-center gap-1.5 p-1.5 rounded cursor-pointer transition-colors border ${
+                <div
+                  key={`${item.url}-${i}`}
+                  role="button"
+                  tabIndex={0}
+                  className={`relative z-[1] flex items-center gap-1.5 p-1.5 rounded cursor-pointer transition-colors border select-none ${
                     isSelected
                       ? "bg-orange-100 dark:bg-orange-900/40 border-orange-400"
                       : isProfitable
                         ? "bg-green-50/50 dark:bg-green-950/20 border-green-200/50 dark:border-green-800/30 hover:bg-green-100/70"
                         : "bg-background border-transparent hover:bg-muted"
                   }`}
-                  onClick={() => handleSourceSelect(item)}>
+                  onClick={() => handleSourceSelect(item)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handleSourceSelect(item);
+                    }
+                  }}>
                   {item.imageUrl && (
                     <img src={item.imageUrl} alt="" className="w-8 h-8 object-cover rounded flex-shrink-0" />
                   )}
@@ -987,7 +1020,7 @@ export default function PriceResearch() {
 
                 {sourceMutation.isPending && (
                   <p className="text-[11px] text-muted-foreground text-center py-2 animate-pulse">
-                    ページから価格を取得中... (15〜30秒)
+                    ページから価格を取得中... (最大約55秒)
                   </p>
                 )}
 
