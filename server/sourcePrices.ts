@@ -666,6 +666,7 @@ export interface UrlPriceResult {
   sourceCondition?: string;
   sourceDescription?: string;
   ebayConditionMapped?: string;
+  sourceWeightG?: number;
 }
 
 // Map Japanese Mercari condition to eBay condition
@@ -844,30 +845,33 @@ const PRICE_EVAL_SCRIPT = `(function(targetUrl) {
 })`;
 
 export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> {
-  const platform = detectPlatform(targetUrl);
-  const ctx = await newContext();
-  const page = await ctx.newPage();
+    const platform = detectPlatform(targetUrl);
+    const ctx = await newContext();
+    const page = await ctx.newPage();
 
-  try {
+    try {
     console.log(`[fetchUrlPrice] ${platform}: ${targetUrl.slice(0, 80)}`);
 
     // Platform-specific loading strategy
-    const isMercariItem = targetUrl.includes("jp.mercari.com/item/");
+    const isMercariProduct =
+      targetUrl.includes("jp.mercari.com") &&
+      (targetUrl.includes("/item/") || targetUrl.includes("/shops/product/")) &&
+      !targetUrl.includes("/search");
     const isYahooAuction = targetUrl.includes("page.auctions.yahoo.co.jp") || targetUrl.includes("yahoo.co.jp/item/");
     const isAmazon = targetUrl.includes("amazon.co.jp") || targetUrl.includes("amazon.com");
 
     const waitCondition = "domcontentloaded";
-    const extraWait = isMercariItem ? 3800 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
+    const extraWait = isMercariProduct ? 4500 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
 
     await page.goto(targetUrl, {
       waitUntil: waitCondition as any,
       timeout: 55_000,
-      ...(isMercariItem ? { referer: "https://jp.mercari.com/" } : {}),
+      ...(isMercariProduct ? { referer: "https://jp.mercari.com/" } : {}),
     });
     await sleep(extraWait);
 
     // For Mercari items, wait for price element
-    if (isMercariItem) {
+    if (isMercariProduct) {
       await page.waitForSelector('[data-testid="price"], [class*="merPrice"], [class*="ItemPrice"], [class*="price"]', { timeout: 16_000 }).catch(() => {});
       try {
         await page.waitForFunction(
@@ -891,18 +895,27 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     const result = await page.evaluate(evalScript) as { price: number; currency: string; title: string; imageUrls: string[] };
 
     // メルカリはクライアント描画のため、構造化抽出が 0 でも本文から価格行を拾う
-    if (isMercariItem && result.price === 0) {
+    if (isMercariProduct && result.price === 0) {
       const fbPrice = await page.evaluate(() => {
-        const t = document.body?.innerText || "";
-        const lines = t.split(/\n/).map((s) => s.trim()).filter(Boolean);
-        const re = /^([\d,]+)\s*円$/;
-        for (const line of lines.slice(0, 100)) {
-          const m = line.match(re);
+        const lines = (document.body?.innerText || "")
+          .split(/\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const candidates: number[] = [];
+        for (const line of lines.slice(0, 160)) {
+          let m = line.match(/^([\d,]+)\s*円$/);
+          if (!m) m = line.match(/^[¥￥]\s*([\d,]+)(?:\s*円)?$/);
+          if (!m) m = line.match(/^([\d,]+)\s*円（税込）$/);
           if (!m) continue;
           const n = parseInt(m[1].replace(/,/g, ""), 10);
-          if (n >= 300 && n < 20_000_000) return n;
+          if (n >= 100 && n < 20_000_000) candidates.push(n);
         }
-        return 0;
+        if (candidates.length === 0) return 0;
+        candidates.sort((a, b) => a - b);
+        for (let i = 0; i < candidates.length; i++) {
+          if (candidates[i] >= 300) return candidates[i];
+        }
+        return candidates[0];
       });
       if (fbPrice > 0) {
         result.price = fbPrice;
@@ -911,7 +924,7 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     }
 
     // メルカリ商品URL: 描画遅延時はスクロール後に再評価
-    if (isMercariItem && (result.price === 0 || !(result.imageUrls || []).length)) {
+    if (isMercariProduct && (result.price === 0 || !(result.imageUrls || []).length)) {
       await sleep(2800);
       await page.mouse.wheel(0, 900).catch(() => {});
       try {
@@ -959,7 +972,7 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
 
     let sourceWeightG: number | undefined;
 
-    if (isMercariItem) {
+    if (isMercariProduct) {
       const mercariScript = "(function() { " +
         "var imgs = []; " +
         "var els = document.querySelectorAll('picture img, [class*=\"Carousel\"] img, [class*=\"carousel\"] img, [class*=\"Gallery\"] img, [class*=\"ItemPhoto\"] img, [class*=\"merCarousel\"] img, img[src*=\"mercdn\"], img[src*=\"mercari\"], meta[property=\"og:image\"]'); " +
@@ -986,7 +999,13 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
         "if (szMatch) shippingSize = szMatch[1]; " +
         "return { imgs: imgs.slice(0, 20), condition: condition, description: description, weightG: weightG, shippingSize: shippingSize }; " +
         "})()";
-      const mercariData = await page.evaluate(mercariScript);
+      const mercariData = (await page.evaluate(mercariScript)) as {
+        imgs: string[];
+        condition?: string;
+        description?: string;
+        weightG?: number;
+        shippingSize?: string;
+      };
       if (Array.isArray(mercariData.imgs) && mercariData.imgs.length > result.imageUrls.length) {
         result.imageUrls = mercariData.imgs;
       }
@@ -1017,7 +1036,7 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
         "if (descEl) description = (descEl.textContent || '').trim().substring(0, 800); " +
         "return { condition: condition, description: description }; " +
         "})()";
-      const yahooData = await page.evaluate(yahooScript);
+      const yahooData = (await page.evaluate(yahooScript)) as { condition?: string; description?: string };
       if (yahooData.condition) sourceCondition = yahooData.condition;
       if (yahooData.description) sourceDescription = yahooData.description;
     }

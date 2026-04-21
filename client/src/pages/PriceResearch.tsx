@@ -503,7 +503,7 @@ export default function PriceResearch() {
   const togglePlatform = (p: string) => setExpandedPlatforms((prev) => ({ ...prev, [p]: !prev[p] }));
 
   const renderSourceItems = (items: SourceItem[], platform: string) => {
-    if (!items.length) return null;
+    const errMsg = sourcePriceData?.errors?.[platform];
     const isExpanded = expandedPlatforms[platform] !== false;
     const displayItems = showProfitOnly && breakEven > 0
       ? items.filter((i) => i.price <= breakEven)
@@ -530,9 +530,14 @@ export default function PriceResearch() {
         </button>
         {isExpanded && (
           <div className="px-2 pb-2 space-y-1 max-h-52 overflow-y-auto">
+            {errMsg && (
+              <p className="text-[10px] text-destructive px-1 pb-1 leading-snug break-words" title={errMsg}>
+                取得エラー: {errMsg.length > 120 ? `${errMsg.slice(0, 120)}…` : errMsg}
+              </p>
+            )}
             {displayItems.length === 0 ? (
               <p className="text-[10px] text-muted-foreground px-1 pb-1">
-                {showProfitOnly ? "利益商品なし" : "結果なし"}
+                {showProfitOnly ? "利益商品なし" : errMsg ? "（上記のため候補なし）" : "このキーワードでは該当なし"}
               </p>
             ) : displayItems.map((item, i) => {
               const isSelected =
@@ -559,8 +564,12 @@ export default function PriceResearch() {
                       handleSourceSelect(item);
                     }
                   }}>
-                  {item.imageUrl && (
-                    <img src={item.imageUrl} alt="" className="w-8 h-8 object-cover rounded flex-shrink-0" />
+                  {item.imageUrl ? (
+                    <img src={item.imageUrl} alt="" className="w-8 h-8 object-cover rounded flex-shrink-0 border border-border/60" />
+                  ) : (
+                    <div className="w-8 h-8 rounded flex-shrink-0 bg-muted border border-dashed border-border flex items-center justify-center text-[7px] text-muted-foreground text-center leading-tight px-0.5">
+                      画像なし
+                    </div>
                   )}
                   <div className="flex-1 min-w-0">
                     <p className="text-[10px] leading-snug line-clamp-2 text-foreground">{item.title}</p>
@@ -920,10 +929,10 @@ export default function PriceResearch() {
 
                 {sourcePriceLoading && (
                   <div className="space-y-2">
-                    {["メルカリ", "ヤフオク", "Yahoo!ショッピング"].map((p) => (
+                    {["メルカリ", "ヤフオク", "Yahoo!ショッピング", "ラクマ", "駿河屋"].map((p) => (
                       <div key={p} className="h-10 rounded-md bg-muted animate-pulse" />
                     ))}
-                    <p className="text-[10px] text-muted-foreground text-center">仕入れサイトから価格を取得中... (30秒程度)</p>
+                    <p className="text-[10px] text-muted-foreground text-center">仕入れサイトから価格を取得中...（最大1分程度）</p>
                   </div>
                 )}
 
@@ -934,7 +943,7 @@ export default function PriceResearch() {
                 {!sourcePriceLoading && fetchedKeyword && sourcePriceData && (
                   <div className="space-y-2">
                     {/* Summary stats */}
-                    {sourcePriceData.overall.stats && (
+                    {sourcePriceData.overall.stats ? (
                       <div className="grid grid-cols-3 gap-1.5 text-center">
                         {[
                           { label: "最安値", val: sourcePriceData.overall.stats.min },
@@ -949,6 +958,10 @@ export default function PriceResearch() {
                           </button>
                         ))}
                       </div>
+                    ) : (
+                      <p className="text-[10px] text-center text-muted-foreground py-1.5 px-2 rounded-md border border-dashed border-border bg-muted/30">
+                        全サイト合算の相場は出せませんでした（候補0件）。下の<strong className="text-foreground">サイト別一覧</strong>で各エラーや0件を確認してください。
+                      </p>
                     )}
 
                     {/* Platform results */}
@@ -1000,7 +1013,7 @@ export default function PriceResearch() {
                 <div className="flex gap-1.5">
                   <Input
                     type="url"
-                    placeholder="https://item.rakuten.co.jp/... など商品ページURL"
+                    placeholder="https://jp.mercari.com/item/... または .../shops/product/... など"
                     value={sourceUrl}
                     onChange={(e) => setSourceUrl(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && sourceUrl.startsWith("http") && sourceMutation.mutate(sourceUrl.trim())}
@@ -1015,7 +1028,7 @@ export default function PriceResearch() {
                   </Button>
                 </div>
                 <p className="text-[10px] text-muted-foreground -mt-1">
-                  楽天・Amazon・メルカリ・ヤフオク・Yahoo!ショッピング等に対応
+                  楽天・Amazon・メルカリ（個人出品 / Shops 商品URL）・ヤフオク・Yahoo!ショッピング等に対応
                 </p>
 
                 {sourceMutation.isPending && (
