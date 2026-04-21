@@ -973,27 +973,17 @@ export default function PriceResearch() {
                       </p>
                     )}
 
-                    {/* Platform results */}
-                    {renderSourceItems(mercariItems, "メルカリ")}
-                    {renderSourceItems(yahooItems, "ヤフオク")}
-                    {renderSourceItems(yahooShoppingItems, "Yahoo!ショッピング")}
-                    {renderSourceItems(rakumaItems, "ラクマ")}
-                    {renderSourceItems(surugayaItems, "駿河屋")}
-
-                    {/* Errors */}
-                    {Object.keys(sourcePriceData.errors || {}).length > 0 && (
-                      <div className="text-[10px] text-muted-foreground">
-                        取得失敗: {Object.keys(sourcePriceData.errors).join(", ")}
-                      </div>
-                    )}
+                    <div className="text-[10px] text-muted-foreground rounded-md border border-dashed border-border px-2 py-1.5">
+                      サイト内一覧の表示は停止しました。下の各サイトリンクから直接確認してください。
+                    </div>
 
                     {/* External links */}
                     <div className="flex flex-wrap gap-1 pt-1 border-t border-border">
                       {[
                         { name: "メルカリ", url: `https://jp.mercari.com/search?keyword=${encodeURIComponent(fetchedKeyword)}&status=on_sale` },
                         { name: "ヤフオク", url: `https://auctions.yahoo.co.jp/search/search?p=${encodeURIComponent(fetchedKeyword)}` },
-                        { name: "ラクマ", url: `https://rakuma.rakuten.co.jp/search/?keyword=${encodeURIComponent(fetchedKeyword)}` },
-                        { name: "駿河屋", url: `https://www.surugaya.co.jp/search/?q=${encodeURIComponent(fetchedKeyword)}&type=0` },
+                        { name: "ラクマ", url: `https://fril.jp/s?query=${encodeURIComponent(fetchedKeyword)}` },
+                        { name: "駿河屋", url: `https://www.suruga-ya.jp/search?search_word=${encodeURIComponent(fetchedKeyword)}` },
                         { name: "楽天", url: `https://search.rakuten.co.jp/search/mall/${encodeURIComponent(fetchedKeyword)}/` },
                         { name: "Amazon", url: `https://www.amazon.co.jp/s?k=${encodeURIComponent(fetchedKeyword)}` },
                       ].map((p) => (
