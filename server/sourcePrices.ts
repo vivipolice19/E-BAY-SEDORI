@@ -256,7 +256,8 @@ async function fetchYahooPrices(keyword: string): Promise<SourceItem[]> {
   const page = await ctx.newPage();
   try {
     const url = `https://auctions.yahoo.co.jp/search/search?p=${encodeURIComponent(keyword)}&va=${encodeURIComponent(keyword)}&exflg=1&b=1&n=20&s1=cbids&o1=a&ei=UTF-8`;
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 55_000 });
+    await sleep(1500);
 
     const items = await page.evaluate(() => {
       const results: Array<{ title: string; price: number; href: string; imgSrc: string }> = [];
@@ -308,7 +309,7 @@ async function fetchYahooShoppingPrices(keyword: string): Promise<SourceItem[]> 
   const page = await ctx.newPage();
   try {
     const url = `https://shopping.yahoo.co.jp/search?p=${encodeURIComponent(keyword)}&sort=price&order=a`;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 55_000 });
     await sleep(2000);
     await page.waitForSelector('a[href*="store.shopping.yahoo"], a[href*="shopping-item-reach"], img', { timeout: 12_000 }).catch(() => {});
     await page.mouse.wheel(0, 900).catch(() => {});
@@ -844,42 +845,134 @@ const PRICE_EVAL_SCRIPT = `(function(targetUrl) {
   return { price: price, currency: currency, title: title.replace(/\\s+/g, ' ').trim().substring(0, 100), imageUrls: imageUrls.slice(0, 20) };
 })`;
 
+/** メルカリ商品 HTML を HTTP のみで取得し、SSR に価格があれば Playwright を省略（高速） */
+async function tryMercariProductFromHttp(targetUrl: string): Promise<UrlPriceResult | null> {
+  if (!targetUrl.includes("jp.mercari.com")) return null;
+  if (!targetUrl.includes("/item/") && !targetUrl.includes("/shops/product/")) return null;
+  if (targetUrl.includes("/search")) return null;
+  try {
+    const res = await fetch(targetUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml",
+        Referer: "https://jp.mercari.com/",
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(9_000),
+    });
+    if (!res.ok) return null;
+    const html = (await res.text()).slice(0, 450_000);
+
+    const decodeEnt = (s: string) =>
+      s
+        .replace(/&amp;/g, "&")
+        .replace(/&quot;/g, '"')
+        .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">");
+
+    let price = 0;
+    const metaAmt = html.match(/property="product:price:amount"\s+content="([\d.]+)"/i);
+    if (metaAmt) price = Math.round(parseFloat(metaAmt[1]));
+
+    if (price <= 0) {
+      const m2 = html.match(/"price"\s*:\s*(\d{3,7})\b/);
+      if (m2) {
+        const p = parseInt(m2[1], 10);
+        if (p >= 100 && p < 20_000_000) price = p;
+      }
+    }
+    if (price <= 0) {
+      const m3 = html.match(/"itemPrice"\s*:\s*(\d{3,7})\b/);
+      if (m3) {
+        const p = parseInt(m3[1], 10);
+        if (p >= 100 && p < 20_000_000) price = p;
+      }
+    }
+
+    let title = "";
+    const ogT = html.match(/property="og:title"\s+content="([^"]+)"/i);
+    if (ogT) title = decodeEnt(ogT[1]).trim();
+    if (!title) {
+      const t2 = html.match(/<title>([^<]{4,200})<\/title>/i);
+      if (t2) title = decodeEnt(t2[1]).replace(/\s*-\s*メルカリ\s*$/, "").trim();
+    }
+
+    const imageUrls: string[] = [];
+    const ogI = html.match(/property="og:image"\s+content="([^"]+)"/gi);
+    if (ogI) {
+      for (const m of ogI) {
+        const sub = m.match(/content="([^"]+)"/i);
+        if (sub) {
+          const u = decodeEnt(sub[1]);
+          if (u.startsWith("http") && imageUrls.indexOf(u) < 0) imageUrls.push(u);
+        }
+        if (imageUrls.length >= 6) break;
+      }
+    }
+
+    if (price <= 0) return null;
+
+    console.log(`[fetchUrlPrice] Mercari HTTP fast path price=${price}`);
+    return {
+      title: title || targetUrl,
+      price,
+      currency: "JPY",
+      url: targetUrl,
+      platform: "メルカリ",
+      imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+    };
+  } catch (e: any) {
+    console.warn(`[fetchUrlPrice] Mercari HTTP skip: ${String(e?.message || e).slice(0, 60)}`);
+    return null;
+  }
+}
+
 export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> {
     const platform = detectPlatform(targetUrl);
-    const ctx = await newContext();
-    const page = await ctx.newPage();
-
-    try {
-    console.log(`[fetchUrlPrice] ${platform}: ${targetUrl.slice(0, 80)}`);
 
     // Platform-specific loading strategy
     const isMercariProduct =
       targetUrl.includes("jp.mercari.com") &&
       (targetUrl.includes("/item/") || targetUrl.includes("/shops/product/")) &&
       !targetUrl.includes("/search");
+
+    if (isMercariProduct) {
+      const httpHit = await tryMercariProductFromHttp(targetUrl);
+      if (httpHit && httpHit.price > 0) return httpHit;
+    }
+
+    const ctx = await newContext();
+    const page = await ctx.newPage();
+
+    try {
+    console.log(`[fetchUrlPrice] ${platform}: ${targetUrl.slice(0, 80)}`);
+
     const isYahooAuction = targetUrl.includes("page.auctions.yahoo.co.jp") || targetUrl.includes("yahoo.co.jp/item/");
     const isAmazon = targetUrl.includes("amazon.co.jp") || targetUrl.includes("amazon.com");
 
     const waitCondition = "domcontentloaded";
-    const extraWait = isMercariProduct ? 4500 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
+    const extraWait = isMercariProduct ? 1400 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
 
     await page.goto(targetUrl, {
       waitUntil: waitCondition as any,
-      timeout: 55_000,
+      timeout: 50_000,
       ...(isMercariProduct ? { referer: "https://jp.mercari.com/" } : {}),
     });
     await sleep(extraWait);
 
-    // For Mercari items, wait for price element
+    // For Mercari items, wait for price element（短めで失敗時は評価スクリプトへ）
     if (isMercariProduct) {
-      await page.waitForSelector('[data-testid="price"], [class*="merPrice"], [class*="ItemPrice"], [class*="price"]', { timeout: 16_000 }).catch(() => {});
+      await page.waitForSelector('[data-testid="price"], [class*="merPrice"], [class*="ItemPrice"], [class*="price"]', { timeout: 5_000 }).catch(() => {});
       try {
         await page.waitForFunction(
           () => /\d[\d,]*\s*円/.test(document.body?.innerText || ""),
-          { timeout: 12_000 },
+          { timeout: 4_000 },
         );
       } catch {
-        /* 続行して評価スクリプトで拾う */
+        /* 続行 */
       }
     }
     // For Yahoo Auctions, wait for price
@@ -923,25 +1016,17 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
       }
     }
 
-    // メルカリ商品URL: 描画遅延時はスクロール後に再評価
-    if (isMercariProduct && (result.price === 0 || !(result.imageUrls || []).length)) {
-      await sleep(2800);
-      await page.mouse.wheel(0, 900).catch(() => {});
-      try {
-        await page.waitForFunction(
-          () => /\d[\d,]*\s*円/.test(document.body?.innerText || ""),
-          { timeout: 10_000 },
-        );
-      } catch {
-        /* */
-      }
+    // メルカリのみ: 価格0のとき短い再試行（待ち過ぎない）
+    if (isMercariProduct && result.price === 0) {
+      await sleep(900);
+      await page.mouse.wheel(0, 400).catch(() => {});
       const retry = (await page.evaluate(evalScript)) as {
         price: number;
         currency: string;
         title: string;
         imageUrls: string[];
       };
-      if (result.price === 0 && retry.price > 0) {
+      if (retry.price > 0) {
         result.price = retry.price;
         result.currency = retry.currency || "JPY";
       }
@@ -950,9 +1035,8 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
       if (result.price === 0) {
         const fb2 = await page.evaluate(() => {
           const lines = (document.body?.innerText || "").split(/\n/).map((s) => s.trim()).filter(Boolean);
-          const re = /^([\d,]+)\s*円$/;
-          for (const line of lines.slice(0, 120)) {
-            const m = line.match(re);
+          for (const line of lines.slice(0, 100)) {
+            const m = line.match(/^([\d,]+)\s*円$/) || line.match(/^[¥￥]\s*([\d,]+)/);
             if (!m) continue;
             const n = parseInt(m[1].replace(/,/g, ""), 10);
             if (n >= 300 && n < 20_000_000) return n;

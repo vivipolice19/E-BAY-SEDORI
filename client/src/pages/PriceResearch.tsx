@@ -384,6 +384,12 @@ export default function PriceResearch() {
 
   // Source URL mutation
   const sourceMutation = useMutation({
+    onMutate: () => {
+      setSourceResult(null);
+      setSourceOverrideJpy(null);
+      setSelectedSourceUrl("");
+      setSelectedSourceImageUrls([]);
+    },
     mutationFn: async (url: string) => {
       const ac = new AbortController();
       const SOURCE_URL_CLIENT_MS = 120_000;
