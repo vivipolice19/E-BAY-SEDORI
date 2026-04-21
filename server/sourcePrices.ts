@@ -589,7 +589,7 @@ function buildKeywordCandidates(raw: string): string[] {
   if (tokens.length >= 1) push(tokens.slice(0, 2).join(" "));
   if (tokens.length >= 1) push(tokens[0]);
 
-  return cands.slice(0, 4);
+  return cands.slice(0, 3);
 }
 
 async function fetchWithKeywordFallback(
@@ -616,6 +616,15 @@ async function fetchWithKeywordFallback(
   return [];
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timeout (${Math.round(ms / 1000)}s)`)), ms),
+    ),
+  ]);
+}
+
 async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
   const errors: Record<string, string> = {};
   console.log(`[SourcePrices] Fetching prices for "${keyword}"...`);
@@ -626,11 +635,46 @@ async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
   console.log(`[SourcePrices] Keyword candidates: ${keywordCandidates.join(" | ")}`);
 
   const [mercariItems, yahooItems, yahooShoppingItems, rakumaItems, surugayaItems] = await Promise.all([
-    fetchWithKeywordFallback("メルカリ", fetchMercariPrices, keywordCandidates, errors),
-    fetchWithKeywordFallback("ヤフオク", fetchYahooPrices, keywordCandidates, errors),
-    fetchWithKeywordFallback("Yahoo!ショッピング", fetchYahooShoppingPrices, keywordCandidates, errors),
-    fetchWithKeywordFallback("ラクマ", fetchRakumaPrices, keywordCandidates, errors),
-    fetchWithKeywordFallback("駿河屋", fetchSurugayaPrices, keywordCandidates, errors),
+    withTimeout(
+      fetchWithKeywordFallback("メルカリ", fetchMercariPrices, keywordCandidates, errors),
+      30_000,
+      "メルカリ",
+    ).catch((e: any) => {
+      errors["メルカリ"] = String(e?.message || e);
+      return [] as SourceItem[];
+    }),
+    withTimeout(
+      fetchWithKeywordFallback("ヤフオク", fetchYahooPrices, keywordCandidates, errors),
+      30_000,
+      "ヤフオク",
+    ).catch((e: any) => {
+      errors["ヤフオク"] = String(e?.message || e);
+      return [] as SourceItem[];
+    }),
+    withTimeout(
+      fetchWithKeywordFallback("Yahoo!ショッピング", fetchYahooShoppingPrices, keywordCandidates, errors),
+      30_000,
+      "Yahoo!ショッピング",
+    ).catch((e: any) => {
+      errors["Yahoo!ショッピング"] = String(e?.message || e);
+      return [] as SourceItem[];
+    }),
+    withTimeout(
+      fetchWithKeywordFallback("ラクマ", fetchRakumaPrices, keywordCandidates, errors),
+      26_000,
+      "ラクマ",
+    ).catch((e: any) => {
+      errors["ラクマ"] = String(e?.message || e);
+      return [] as SourceItem[];
+    }),
+    withTimeout(
+      fetchWithKeywordFallback("駿河屋", fetchSurugayaPrices, keywordCandidates, errors),
+      26_000,
+      "駿河屋",
+    ).catch((e: any) => {
+      errors["駿河屋"] = String(e?.message || e);
+      return [] as SourceItem[];
+    }),
   ]);
 
   const result: SourceResults = {
