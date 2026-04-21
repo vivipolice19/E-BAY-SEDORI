@@ -874,8 +874,14 @@ async function tryMercariProductFromHttp(targetUrl: string): Promise<UrlPriceRes
         .replace(/&gt;/g, ">");
 
     let price = 0;
-    const metaAmt = html.match(/property="product:price:amount"\s+content="([\d.]+)"/i);
+    const metaAmt =
+      html.match(/property="product:price:amount"\s+content="([\d.]+)"/i) ||
+      html.match(/name="product:price:amount"\s+content="([\d.]+)"/i);
     if (metaAmt) price = Math.round(parseFloat(metaAmt[1]));
+    if (price <= 0) {
+      const rscMeta = html.match(/\\"name\\":\\"product:price:amount\\",\\"content\\":\\"([\d.]+)\\"/i);
+      if (rscMeta) price = Math.round(parseFloat(rscMeta[1]));
+    }
 
     if (price <= 0) {
       const m2 = html.match(/"price"\s*:\s*(\d{3,7})\b/);
@@ -893,15 +899,21 @@ async function tryMercariProductFromHttp(targetUrl: string): Promise<UrlPriceRes
     }
 
     let title = "";
-    const ogT = html.match(/property="og:title"\s+content="([^"]+)"/i);
+    const ogT =
+      html.match(/property="og:title"\s+content="([^"]+)"/i) ||
+      html.match(/name="og:title"\s+content="([^"]+)"/i);
     if (ogT) title = decodeEnt(ogT[1]).trim();
+    if (!title) {
+      const rscTitle = html.match(/\\"(?:property|name)\\":\\"og:title\\",\\"content\\":\\"([^\\"]+)\\"/i);
+      if (rscTitle) title = decodeEnt(rscTitle[1]).trim();
+    }
     if (!title) {
       const t2 = html.match(/<title>([^<]{4,200})<\/title>/i);
       if (t2) title = decodeEnt(t2[1]).replace(/\s*-\s*メルカリ\s*$/, "").trim();
     }
 
     const imageUrls: string[] = [];
-    const ogI = html.match(/property="og:image"\s+content="([^"]+)"/gi);
+    const ogI = html.match(/(?:property|name)="og:image"\s+content="([^"]+)"/gi);
     if (ogI) {
       for (const m of ogI) {
         const sub = m.match(/content="([^"]+)"/i);
@@ -909,6 +921,14 @@ async function tryMercariProductFromHttp(targetUrl: string): Promise<UrlPriceRes
           const u = decodeEnt(sub[1]);
           if (u.startsWith("http") && imageUrls.indexOf(u) < 0) imageUrls.push(u);
         }
+        if (imageUrls.length >= 6) break;
+      }
+    }
+    if (imageUrls.length === 0) {
+      const rscImages = [...html.matchAll(/\\"(?:property|name)\\":\\"og:image\\",\\"content\\":\\"([^\\"]+)\\"/gi)];
+      for (const m of rscImages) {
+        const u = decodeEnt(m[1]);
+        if (u.startsWith("http") && imageUrls.indexOf(u) < 0) imageUrls.push(u);
         if (imageUrls.length >= 6) break;
       }
     }
