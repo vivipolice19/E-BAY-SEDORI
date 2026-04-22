@@ -1,9 +1,52 @@
-// Google Sheets integration - using Replit connector
+// Google Sheets — Render 等: GOOGLE_SERVICE_ACCOUNT_JSON（サービスアカウント JSON 全文）
+// Replit: 従来どおり REPL_IDENTITY + REPLIT_CONNECTORS_HOSTNAME のコネクター
 import { google } from "googleapis";
 
+const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+
+function parseServiceAccountJson(): Record<string, unknown> | null {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof obj.client_email !== "string" || typeof obj.private_key !== "string") {
+      throw new Error("missing client_email or private_key");
+    }
+    return obj;
+  } catch {
+    throw new Error(
+      "GOOGLE_SERVICE_ACCOUNT_JSON が不正です。サービスアカウントの JSON を1行に整形して設定してください。",
+    );
+  }
+}
+
+export async function getUncachableGoogleSheetClient() {
+  const credentials = parseServiceAccountJson();
+  if (credentials) {
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: [SHEETS_SCOPE],
+    });
+    return google.sheets({ version: "v4", auth });
+  }
+
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+    const auth = new google.auth.GoogleAuth({
+      scopes: [SHEETS_SCOPE],
+    });
+    return google.sheets({ version: "v4", auth });
+  }
+
+  const accessToken = await getReplitConnectorAccessToken();
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({ access_token: accessToken });
+  return google.sheets({ version: "v4", auth: oauth2Client });
+}
+
+// ---- Replit Google Sheet connector (legacy) ----
 let connectionSettings: any;
 
-async function getAccessToken() {
+async function getReplitConnectorAccessToken() {
   if (
     connectionSettings &&
     connectionSettings.settings.expires_at &&
@@ -19,8 +62,10 @@ async function getAccessToken() {
     ? "depl " + process.env.WEB_REPL_RENEWAL
     : null;
 
-  if (!xReplitToken) {
-    throw new Error("X-Replit-Token not found for repl/depl");
+  if (!xReplitToken || !hostname) {
+    throw new Error(
+      "Google Sheets 未設定です。Render では環境変数 GOOGLE_SERVICE_ACCOUNT_JSON（サービスアカウント JSON）を設定し、スプレッドシートをその client_email に共有してください。Replit の場合は Google Sheet コネクタを接続してください。",
+    );
   }
 
   connectionSettings = await fetch(
@@ -30,7 +75,7 @@ async function getAccessToken() {
         Accept: "application/json",
         "X-Replit-Token": xReplitToken,
       },
-    }
+    },
   )
     .then((res) => res.json())
     .then((data) => data.items?.[0]);
@@ -43,13 +88,6 @@ async function getAccessToken() {
     throw new Error("Google Sheet not connected");
   }
   return accessToken;
-}
-
-export async function getUncachableGoogleSheetClient() {
-  const accessToken = await getAccessToken();
-  const oauth2Client = new google.auth.OAuth2();
-  oauth2Client.setCredentials({ access_token: accessToken });
-  return google.sheets({ version: "v4", auth: oauth2Client });
 }
 
 async function getSheetId(spreadsheetId: string, sheetName: string): Promise<number | null> {

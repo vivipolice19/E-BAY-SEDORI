@@ -394,6 +394,12 @@ export default function SettingsPage() {
             <p className="text-xs text-muted-foreground">
               スプレッドシートURLの「/d/」と「/edit」の間の文字列
             </p>
+            <p className="text-[10px] text-muted-foreground border-l-2 border-amber-400 pl-2 leading-relaxed">
+              <strong className="text-amber-800 dark:text-amber-200">Render 等:</strong> Google のサービスアカウント JSON を環境変数{" "}
+              <code className="bg-muted px-1 rounded">GOOGLE_SERVICE_ACCOUNT_JSON</code> に<strong>1行</strong>で設定し、
+              スプレッドシートをその <code className="bg-muted px-1 rounded">client_email</code> に編集者で共有してください（Sheets API 有効化が必要）。
+              Replit は従来どおりコネクタでも可。
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -614,7 +620,7 @@ export default function SettingsPage() {
           <p className="text-xs font-medium text-foreground">システム情報</p>
           <div className="space-y-1 text-xs text-muted-foreground">
             <p>• eBay API: Browse API + Finding API + Trading API（出品）使用</p>
-            <p>• Google Sheets: API v4 使用（Replit連携）</p>
+            <p>• Google Sheets: API v4（Render: GOOGLE_SERVICE_ACCOUNT_JSON / Replit: コネクタ）</p>
             <p>• スプレッドシート: {spreadsheetId ? "設定済み ✓" : "未設定"}</p>
             <p>• eBayセラートークン: {(settings?.ebayUserTokenConfigured || !!ebayUserToken) ? "設定済み ✓" : "未設定"}</p>
             <p>• 在庫管理シート: {inventorySheetName || "Mercari-eBay 在庫管理"}</p>
