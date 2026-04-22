@@ -8,6 +8,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { AppSettings } from "@shared/schema";
+
+type SettingsResponse = AppSettings & {
+  ebayUserTokenConfigured?: boolean;
+  ebayDevIdConfigured?: boolean;
+};
 import {
   Settings, FileSpreadsheet, DollarSign, Save, Loader2,
   ExternalLink, Info, Truck, Package, RefreshCw, ShoppingBag,
@@ -16,7 +21,7 @@ import {
 
 export default function SettingsPage() {
   const { toast } = useToast();
-  const { data: settings, isLoading } = useQuery<AppSettings>({
+  const { data: settings, isLoading } = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
   });
 
@@ -155,7 +160,9 @@ export default function SettingsPage() {
               の <strong>App ID（Client ID）</strong> と <strong>Cert ID（Client Secret）</strong> を入力します。商品検索（Finding / Browse OAuth）と Trading API 出品の HTTP ヘッダの両方に使われます。
             </p>
             <p className="text-[10px] opacity-90">
-              環境変数 <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_APP_ID</code> / <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_CERT_ID</code> をホストに設定している場合は、そちらが<strong>優先</strong>されます（設定画面の値は無視）。
+              環境変数 <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_APP_ID</code> / <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_CERT_ID</code> をホストに設定している場合は、そちらが<strong>優先</strong>されます（空白だけの場合は設定画面の値を使います）。
+              出品用: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_USER_TOKEN</code> / <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_DEV_ID</code> も同様です。
+              Render 等では <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">DATABASE_URL</code>（PostgreSQL）を付けると「保存」した設定が再起動後も残ります。
             </p>
           </div>
           <div className="space-y-1.5">
@@ -233,8 +240,8 @@ export default function SettingsPage() {
             <div className="space-y-1.5">
               <Label className="text-sm flex items-center justify-between">
                 <span>eBay User Token（Trading API）</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ebayUserToken ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                  {ebayUserToken ? "✓ 設定済み" : "未設定"}
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${(settings?.ebayUserTokenConfigured || !!ebayUserToken) ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                  {(settings?.ebayUserTokenConfigured || !!ebayUserToken) ? "✓ 利用可" : "未設定"}
                 </span>
               </Label>
               <div className="relative">
@@ -253,6 +260,11 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
+            {settings?.ebayUserTokenConfigured && !ebayUserToken.trim() && (
+              <p className="text-[10px] text-muted-foreground">
+                環境変数 <code className="bg-muted px-0.5 rounded">EBAY_USER_TOKEN</code> が有効です（値は画面に出しません）。
+              </p>
+            )}
 
             <div className="space-y-1.5">
               <Label className="text-sm">Dev ID（開発者ID）</Label>
@@ -264,6 +276,11 @@ export default function SettingsPage() {
                 data-testid="input-ebay-dev-id"
               />
               <p className="text-xs text-muted-foreground">eBay Developerページの My Keys に表示される Dev ID</p>
+              {settings?.ebayDevIdConfigured && !ebayDevId.trim() && (
+                <p className="text-[10px] text-muted-foreground">
+                  環境変数 <code className="bg-muted px-0.5 rounded">EBAY_DEV_ID</code> が有効です。
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -293,49 +310,54 @@ export default function SettingsPage() {
           </div>
 
           <div className="border-t pt-3 space-y-3">
-            <p className="text-xs font-medium text-muted-foreground">出品ポリシー設定（eBay Seller Hubのポリシー名またはID）</p>
+            <p className="text-xs font-medium text-muted-foreground">
+              Business policies（数値のプロファイルID）— 3つとも入力すると Trading API で SellerProfiles を使います。未入力または一部だけの場合は従来の固定の配送・返品XMLにフォールバックします。
+            </p>
             <div className="space-y-2">
               <div className="space-y-1.5">
-                <Label className="text-sm">支払いポリシー名</Label>
+                <Label className="text-sm">支払いポリシーID（Payment profile ID）</Label>
                 <Input
                   value={ebayPaymentPolicy}
                   onChange={e => setEbayPaymentPolicy(e.target.value)}
-                  placeholder="PaymentPolicy（省略可）"
-                  className="text-xs"
+                  placeholder="例: 5000000000（数字のみ）"
+                  className="text-xs font-mono"
                   data-testid="input-ebay-payment-policy"
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-sm">返品ポリシー名</Label>
+                <Label className="text-sm">返品ポリシーID（Return profile ID）</Label>
                 <Input
                   value={ebayReturnPolicy}
                   onChange={e => setEbayReturnPolicy(e.target.value)}
-                  placeholder="例: 30日以内返品OK"
-                  className="text-xs"
+                  placeholder="例: 5000000000（数字のみ）"
+                  className="text-xs font-mono"
                   data-testid="input-ebay-return-policy"
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-sm">配送ポリシー名</Label>
+                <Label className="text-sm">配送ポリシーID（Shipping profile ID）</Label>
                 <Input
                   value={ebayShippingPolicy}
                   onChange={e => setEbayShippingPolicy(e.target.value)}
-                  placeholder="例: EMS Worldwide"
-                  className="text-xs"
+                  placeholder="例: 5000000000（数字のみ）"
+                  className="text-xs font-mono"
                   data-testid="input-ebay-shipping-policy"
                 />
               </div>
             </div>
           </div>
 
-          {ebayUserToken && (
+          {(settings?.ebayUserTokenConfigured || !!ebayUserToken) && (
             <div className="flex items-center gap-2 p-2.5 rounded-lg bg-green-50 dark:bg-green-950 border border-green-200 text-xs text-green-700 dark:text-green-300">
               <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
-              <span>トークン設定済み。出品管理ページから「eBayに出品する」ボタンで直接出品できます。</span>
+              <span>
+                出品用トークンが利用可能です（設定画面の保存値または環境変数 <code className="bg-green-100 dark:bg-green-900 px-0.5 rounded">EBAY_USER_TOKEN</code>）。
+                出品管理ページから「eBayに出品する」で直接出品できます。
+              </span>
             </div>
           )}
 
-          {!ebayUserToken && (
+          {!(settings?.ebayUserTokenConfigured || !!ebayUserToken) && (
             <div className="flex items-center gap-2 p-2.5 rounded-lg bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 text-xs text-yellow-700 dark:text-yellow-300">
               <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
               <span>トークン未設定のため、出品管理ページの「eBayに出品」ボタンは使用できません。eBay Seller Hubで手動出品は引き続き可能です。</span>
@@ -594,7 +616,7 @@ export default function SettingsPage() {
             <p>• eBay API: Browse API + Finding API + Trading API（出品）使用</p>
             <p>• Google Sheets: API v4 使用（Replit連携）</p>
             <p>• スプレッドシート: {spreadsheetId ? "設定済み ✓" : "未設定"}</p>
-            <p>• eBayセラートークン: {ebayUserToken ? "設定済み ✓" : "未設定"}</p>
+            <p>• eBayセラートークン: {(settings?.ebayUserTokenConfigured || !!ebayUserToken) ? "設定済み ✓" : "未設定"}</p>
             <p>• 在庫管理シート: {inventorySheetName || "Mercari-eBay 在庫管理"}</p>
           </div>
         </CardContent>

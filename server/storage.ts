@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import type { SavedProduct, InsertSavedProduct, AppSettings, User, InsertUser, ListingTemplate } from "@shared/schema";
+import { loadPersistedSettings, savePersistedSettings } from "./settingsDb";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -207,7 +208,7 @@ export class MemStorage implements IStorage {
   private users: Map<string, User> = new Map();
   private products: Map<string, SavedProduct> = new Map();
   private templates: Map<string, ListingTemplate> = new Map();
-  private settings: AppSettings = {
+  protected settings: AppSettings = {
     id: "default",
     spreadsheetId: process.env.SPREADSHEET_ID || null,
     sheetName: "セドリリスト",
@@ -345,4 +346,34 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+/**
+ * DATABASE_URL がある場合は app_settings 行を読み書きする。
+ * Render の再起動・水平スケールでも設定（eBay App ID 等）が共有される。
+ */
+export class DbBackedStorage extends MemStorage {
+  async getSettings(): Promise<AppSettings> {
+    if (!process.env.DATABASE_URL?.trim()) return super.getSettings();
+    try {
+      const row = await loadPersistedSettings();
+      if (row) this.settings = row;
+    } catch (e) {
+      console.error("[settings] Failed to load from database:", e);
+    }
+    return this.settings;
+  }
+
+  async updateSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
+    const merged = await super.updateSettings(updates);
+    if (!process.env.DATABASE_URL?.trim()) return merged;
+    try {
+      await savePersistedSettings(merged);
+    } catch (e) {
+      console.error("[settings] Failed to save to database:", e);
+    }
+    return merged;
+  }
+}
+
+export const storage = process.env.DATABASE_URL?.trim()
+  ? new DbBackedStorage()
+  : new MemStorage();

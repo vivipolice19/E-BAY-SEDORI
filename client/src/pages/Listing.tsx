@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { SavedProduct, AppSettings, ListingTemplate } from "@shared/schema";
+import { normalizeEbayCategoryId } from "@shared/ebayCategory";
 import {
   Package, Tag, DollarSign, Image, FileText, List,
   BarChart2, Loader2, Check, ExternalLink,
@@ -16,6 +17,13 @@ import {
   Star, AlertCircle, CheckCircle2, Save, Truck,
   Copy, ClipboardCheck, Layers, Settings2, FileSpreadsheet,
 } from "lucide-react";
+
+function stripHtmlToPlain(html: string): string {
+  if (!html) return "";
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  return (d.textContent || d.innerText || "").replace(/\s+/g, " ").trim();
+}
 
 // ---- Utility: Weight parsing ----
 function parseWeightToGrams(value: string): number | null {
@@ -498,7 +506,14 @@ function ListingDetail({ product, settings, templates, onClose }: {
     queryFn: async () => {
       const res = await fetch(`/api/ebay/item-specifics/${encodeURIComponent(product.ebayItemId!)}`);
       if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
-      return res.json() as Promise<{ itemSpecifics: Record<string, string>; title?: string; condition?: string; categoryPath?: string; categoryId?: string }>;
+      return res.json() as Promise<{
+        itemSpecifics: Record<string, string>;
+        title?: string;
+        condition?: string;
+        categoryPath?: string;
+        categoryId?: string;
+        description?: string;
+      }>;
     },
     enabled: !!product.ebayItemId,
     staleTime: 10 * 60 * 1000,
@@ -528,8 +543,16 @@ function ListingDetail({ product, settings, templates, onClose }: {
         autoSavePayload.ebayCondition = specificsData.condition;
       }
       if (specificsData.categoryId && !product.ebayCategoryId) {
-        setEbayCategoryId(specificsData.categoryId);
-        autoSavePayload.ebayCategoryId = specificsData.categoryId;
+        const cid = normalizeEbayCategoryId(specificsData.categoryId) || specificsData.categoryId;
+        setEbayCategoryId(cid);
+        autoSavePayload.ebayCategoryId = cid;
+      }
+      if (specificsData.description && !listingDescription) {
+        const plain = stripHtmlToPlain(specificsData.description).slice(0, 65000);
+        if (plain) {
+          setListingDescription(plain);
+          autoSavePayload.listingDescription = plain;
+        }
       }
 
       // Auto-save newly discovered fields to DB (and sheet) without requiring 保存 click
@@ -601,14 +624,15 @@ function ListingDetail({ product, settings, templates, onClose }: {
 
   const listOnEbayMutation = useMutation({
     mutationFn: async () => {
-      if (!ebayCategoryId) throw new Error("eBayカテゴリID（数字）を入力してください");
+      const normalizedCat = normalizeEbayCategoryId(ebayCategoryId);
+      if (!normalizedCat) throw new Error("eBayカテゴリID（数字）が必要です。「eBayから取得」で補完するか、末尾の数値IDを入力してください");
       const price = listingPrice ? parseFloat(listingPrice) : parseFloat(suggestedUsd || "0");
       if (!price || price <= 0) throw new Error("出品価格を確認してください");
       const imageUrls = (pendingEbayImageUrls ?? product.ebayImageUrls ?? product.sourceImageUrls ?? []) as string[];
       return apiRequest("POST", "/api/ebay/list", {
         title: listingTitle || product.name,
         description: listingDescription || product.name,
-        categoryId: ebayCategoryId,
+        categoryId: normalizedCat,
         price,
         condition: ebayCondition || "Used",
         specifics: Object.keys(specifics).length > 0 ? specifics : undefined,
@@ -923,7 +947,10 @@ function ListingDetail({ product, settings, templates, onClose }: {
             </FieldRow>
 
             {/* Description */}
-            <FieldRow label="eBay出品説明文（英語）" copyText={listingDescription}>
+            <FieldRow label="eBay出品説明文" copyText={listingDescription}>
+              <p className="text-[10px] text-muted-foreground mb-1.5">
+                参考eBay商品URLがある場合、「eBayから取得」で説明文が取れるときは未入力時のみ自動で入ります（HTMLは除去）。英語にしたい場合は下の生成ボタンを使ってください。
+              </p>
               <div className="flex items-center gap-2 mb-2">
                 <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
                   <SelectTrigger className="h-8 text-xs flex-1" data-testid="select-template">
@@ -947,7 +974,7 @@ function ListingDetail({ product, settings, templates, onClose }: {
                   rows={10} className="text-xs font-mono" data-testid="textarea-description" />
               ) : (
                 <div className="text-xs text-muted-foreground p-3 border border-dashed rounded-md text-center">
-                  上のボタンで説明文を自動生成してください
+                  eBayからの自動取得を待つか、上のボタンでテンプレートから生成してください
                 </div>
               )}
             </FieldRow>
@@ -1174,17 +1201,18 @@ function ListingDetail({ product, settings, templates, onClose }: {
                 </div>
               )}
               <div className="space-y-1.5">
-                <Label className="text-[10px] text-muted-foreground">eBay カテゴリID（数字）
+                <Label className="text-[10px] text-muted-foreground">eBay カテゴリID（数字・「eBayから取得」で補完）
                   <a href="https://pages.ebay.com/sellerinformation/news/categorychanges.html" target="_blank" rel="noreferrer"
                     className="ml-1 text-blue-500 hover:underline">（調べる方法）</a>
                 </Label>
                 <Input
                   value={ebayCategoryId}
-                  onChange={e => setEbayCategoryId(e.target.value.replace(/\D/g, ""))}
-                  placeholder="例: 625 (Camera & Photo)"
+                  onChange={e => setEbayCategoryId(e.target.value)}
+                  placeholder="例: 183454 またはカテゴリパス末尾の数値"
                   className="h-7 text-xs font-mono"
                   data-testid="input-ebay-category-id"
                 />
+                <p className="text-[9px] text-muted-foreground">出品時に数値IDへ自動正規化します（パス文字列を貼っても可）。</p>
               </div>
               {product.ebayCategoryPath && (
                 <p className="text-[10px] text-muted-foreground">参考カテゴリ: {product.ebayCategoryPath}</p>

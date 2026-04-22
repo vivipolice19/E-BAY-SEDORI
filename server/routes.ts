@@ -1,13 +1,34 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { searchEbayItems, findPopularItems, searchSoldItems, fetchEbayUrlData, POPULAR_CATEGORIES, getEbayItemDetail, generateListingDescription, getEbayItemImages } from "./ebayClient";
+import {
+  searchEbayItems,
+  findPopularItems,
+  searchSoldItems,
+  fetchEbayUrlData,
+  POPULAR_CATEGORIES,
+  getEbayItemDetail,
+  generateListingDescription,
+  getEbayItemImages,
+} from "./ebayClient";
+import { buildTradingAddItemXml, resolveListingAuth } from "./ebayList";
+import type { AppSettings } from "@shared/schema";
 import { appendProductToSheet, updateProductInSheet, appendToInventorySheet, getSpreadsheetInfo, ensureSheetExists, updateSheetHeaders, readSheetProducts } from "./googleSheets";
 import { fetchSourcePrices, calcPriceStats, fetchUrlPrice } from "./sourcePrices";
 import { buildSmartSearchKeywords } from "./searchBoost";
 import { translateToJapanese } from "./translate";
 import { insertSavedProductSchema } from "@shared/schema";
 import { z } from "zod";
+
+function settingsResponseWithListingFlags(settings: AppSettings) {
+  return {
+    ...settings,
+    ebayUserTokenConfigured: !!(
+      settings.ebayUserToken?.trim() || process.env.EBAY_USER_TOKEN?.trim()
+    ),
+    ebayDevIdConfigured: !!(settings.ebayDevId?.trim() || process.env.EBAY_DEV_ID?.trim()),
+  };
+}
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
@@ -610,7 +631,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ---- Settings ----
   app.get("/api/settings", async (_req, res) => {
     const settings = await storage.getSettings();
-    res.json(settings);
+    res.json(settingsResponseWithListingFlags(settings));
   });
 
   app.put("/api/settings", async (req, res) => {
@@ -643,7 +664,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
 
       const settings = await storage.updateSettings(parsed.data);
-      res.json(settings);
+      res.json(settingsResponseWithListingFlags(settings));
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -653,8 +674,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/ebay/list", async (req, res) => {
     try {
       const settings = await storage.getSettings();
-      if (!settings.ebayUserToken) {
-        return res.status(400).json({ error: "eBay User Tokenが設定されていません。設定ページでトークンを入力してください。" });
+      const auth = resolveListingAuth(settings);
+
+      if (!auth.userToken) {
+        return res.status(400).json({
+          error:
+            "eBay User Token が未設定です。設定画面で保存するか、環境変数 EBAY_USER_TOKEN を設定してください。",
+        });
       }
 
       const {
@@ -676,82 +702,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ error: "title, price, categoryId は必須です" });
       }
 
-      const APP_ID = (process.env.EBAY_APP_ID || settings.ebayAppId || "").trim();
-      const CERT_ID = (process.env.EBAY_CERT_ID || settings.ebayCertId || "").trim();
-      const DEV_ID = settings.ebayDevId || "";
-      const TOKEN = settings.ebayUserToken;
-
-      if (!APP_ID || !CERT_ID) {
+      if (!auth.appId || !auth.certId) {
         return res.status(400).json({
           error: "eBay App ID（Client ID）と Cert ID（Client Secret）が必要です。設定画面の「eBay API（検索・出品）」または環境変数で設定してください。",
         });
       }
 
-      // Map condition string to eBay condition ID
-      const conditionMap: Record<string, { id: string; name: string }> = {
-        "New": { id: "1000", name: "New" },
-        "Like New": { id: "3000", name: "Like New" },
-        "Very Good": { id: "4000", name: "Very Good" },
-        "Good": { id: "5000", name: "Good" },
-        "Acceptable": { id: "6000", name: "Acceptable" },
-        "For Parts or Not Working": { id: "7000", name: "For Parts or Not Working" },
-        "Used": { id: "3000", name: "Used" },
-      };
-      const condObj = conditionMap[condition] || { id: "3000", name: "Used" };
+      if (!auth.devId) {
+        return res.status(400).json({
+          error:
+            "eBay Dev ID が未設定です。設定画面で Dev ID を保存するか、環境変数 EBAY_DEV_ID を設定してください。",
+        });
+      }
 
-      // Build Item Specifics XML
-      const nameValueList = specifics
-        ? Object.entries(specifics).map(([k, v]) => `<NameValueList><Name>${k}</Name><Value>${v}</Value></NameValueList>`).join("")
-        : "";
-
-      // Build picture URLs XML
-      const pictureUrls = (imageUrls || []).slice(0, 12).map(url => `<PictureURL>${url}</PictureURL>`).join("");
-
-      const dispatchD = dispatchDays ?? settings.ebayDispatchDays ?? 3;
-      const location = settings.ebayLocation || "Japan";
-
-      const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
-<AddItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-  <RequesterCredentials>
-    <eBayAuthToken>${TOKEN}</eBayAuthToken>
-  </RequesterCredentials>
-  <ErrorLanguage>en_US</ErrorLanguage>
-  <WarningLevel>High</WarningLevel>
-  <Item>
-    <Title>${title.slice(0, 80)}</Title>
-    <Description><![CDATA[${description}]]></Description>
-    <PrimaryCategory>
-      <CategoryID>${categoryId}</CategoryID>
-    </PrimaryCategory>
-    <StartPrice>${price.toFixed(2)}</StartPrice>
-    <ConditionID>${condObj.id}</ConditionID>
-    <ConditionDescription>${condObj.name}</ConditionDescription>
-    <Country>JP</Country>
-    <Location>${location}</Location>
-    <Currency>USD</Currency>
-    <ListingDuration>GTC</ListingDuration>
-    <ListingType>FixedPriceItem</ListingType>
-    <DispatchTimeMax>${dispatchD}</DispatchTimeMax>
-    <Quantity>1</Quantity>
-    ${pictureUrls ? `<PictureDetails>${pictureUrls}</PictureDetails>` : ""}
-    <ItemSpecifics>${nameValueList}</ItemSpecifics>
-    <ShippingDetails>
-      <ShippingType>Flat</ShippingType>
-      <InternationalShippingServiceOption>
-        <ShippingServicePriority>1</ShippingServicePriority>
-        <ShippingService>StandardInternationalShipping</ShippingService>
-        <ShippingServiceCost currencyID="USD">0.00</ShippingServiceCost>
-        <ShipToLocation>Worldwide</ShipToLocation>
-      </InternationalShippingServiceOption>
-    </ShippingDetails>
-    <ReturnPolicy>
-      <ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>
-      <RefundOption>MoneyBack</RefundOption>
-      <ReturnsWithinOption>Days_30</ReturnsWithinOption>
-      <ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>
-    </ReturnPolicy>
-  </Item>
-</AddItemRequest>`;
+      let xmlBody: string;
+      try {
+        xmlBody = buildTradingAddItemXml(settings, {
+          title,
+          description,
+          categoryId,
+          price,
+          condition,
+          specifics,
+          imageUrls,
+          weight,
+          dispatchDays,
+        });
+      } catch (buildErr: any) {
+        return res.status(400).json({ error: buildErr.message || "出品リクエストの組み立てに失敗しました" });
+      }
 
       const apiRes = await fetch("https://api.ebay.com/ws/api.dll", {
         method: "POST",
@@ -759,10 +738,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           "Content-Type": "text/xml",
           "X-EBAY-API-CALL-NAME": "AddItem",
           "X-EBAY-API-SITEID": "0",
-          "X-EBAY-API-COMPATIBILITY-LEVEL": "967",
-          "X-EBAY-API-APP-NAME": APP_ID,
-          "X-EBAY-API-CERT-NAME": CERT_ID,
-          "X-EBAY-API-DEV-NAME": DEV_ID,
+          "X-EBAY-API-COMPATIBILITY-LEVEL": "1113",
+          "X-EBAY-API-APP-NAME": auth.appId,
+          "X-EBAY-API-CERT-NAME": auth.certId,
+          "X-EBAY-API-DEV-NAME": auth.devId,
         },
         body: xmlBody,
       });

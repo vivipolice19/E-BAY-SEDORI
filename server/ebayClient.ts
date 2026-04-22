@@ -3,11 +3,21 @@
 import type { EbayItem, EbaySoldResearchMeta } from "@shared/schema";
 import { storage } from "./storage";
 
+/** 空白のみの環境変数は無視し、設定画面の値にフォールバックする */
+export function pickTrimmedCredential(
+  envVal: string | undefined,
+  stored: string | null | undefined,
+): string {
+  const fromEnv = (envVal ?? "").trim();
+  if (fromEnv) return fromEnv;
+  return (stored ?? "").trim();
+}
+
 async function resolveEbayApiCredentials(): Promise<{ appId: string; certId: string }> {
   const s = await storage.getSettings();
   return {
-    appId: (process.env.EBAY_APP_ID || s.ebayAppId || "").trim(),
-    certId: (process.env.EBAY_CERT_ID || s.ebayCertId || "").trim(),
+    appId: pickTrimmedCredential(process.env.EBAY_APP_ID, s.ebayAppId),
+    certId: pickTrimmedCredential(process.env.EBAY_CERT_ID, s.ebayCertId),
   };
 }
 
@@ -919,7 +929,7 @@ function parseItemDetail(data: any): EbayItemDetail {
     imageUrl: data.image?.imageUrl,
     additionalImages: images,
     itemSpecifics: specifics,
-    description: data.description,
+    description: data.description || data.shortDescription,
     seller: data.seller ? {
       username: data.seller.username || "",
       feedbackScore: data.seller.feedbackScore || 0,
