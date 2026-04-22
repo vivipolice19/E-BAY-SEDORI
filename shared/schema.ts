@@ -84,6 +84,18 @@ export const appSettings = pgTable("app_settings", {
   ebayCertId: text("ebay_cert_id"),
 });
 
+export const inventorySyncLogs = pgTable("inventory_sync_logs", {
+  id: varchar("id").primaryKey(),
+  productId: text("product_id").notNull(),
+  requestPayload: text("request_payload").notNull(),
+  status: text("status").notNull(), // success | failed | skipped
+  responseStatus: integer("response_status"),
+  responseBody: text("response_body"),
+  errorMessage: text("error_message"),
+  sentAt: timestamp("sent_at").defaultNow().notNull(),
+  retryCount: integer("retry_count").default(0).notNull(),
+});
+
 export const insertSavedProductSchema = createInsertSchema(savedProducts).omit({
   id: true,
   createdAt: true,
@@ -96,6 +108,7 @@ export const insertSettingsSchema = createInsertSchema(appSettings).omit({
 export type InsertSavedProduct = z.infer<typeof insertSavedProductSchema>;
 export type SavedProduct = typeof savedProducts.$inferSelect;
 export type AppSettings = typeof appSettings.$inferSelect;
+export type InventorySyncLog = typeof inventorySyncLogs.$inferSelect;
 export type InsertUser = { username: string; password: string };
 export type User = typeof users.$inferSelect;
 

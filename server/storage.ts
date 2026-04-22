@@ -1,5 +1,13 @@
 import { randomUUID } from "crypto";
-import type { SavedProduct, InsertSavedProduct, AppSettings, User, InsertUser, ListingTemplate } from "@shared/schema";
+import type {
+  SavedProduct,
+  InsertSavedProduct,
+  AppSettings,
+  User,
+  InsertUser,
+  ListingTemplate,
+  InventorySyncLog,
+} from "@shared/schema";
 import { loadPersistedSettings, savePersistedSettings } from "./settingsDb";
 
 export interface IStorage {
@@ -21,6 +29,11 @@ export interface IStorage {
   createTemplate(template: Omit<ListingTemplate, "id">): Promise<ListingTemplate>;
   updateTemplate(id: string, template: Partial<Omit<ListingTemplate, "id">>): Promise<ListingTemplate | undefined>;
   deleteTemplate(id: string): Promise<boolean>;
+
+  createInventorySyncLog(log: Omit<InventorySyncLog, "id">): Promise<InventorySyncLog>;
+  updateInventorySyncLog(id: string, updates: Partial<Omit<InventorySyncLog, "id">>): Promise<InventorySyncLog | undefined>;
+  getInventorySyncLog(id: string): Promise<InventorySyncLog | undefined>;
+  getInventorySyncLogs(status?: InventorySyncLog["status"]): Promise<InventorySyncLog[]>;
 }
 
 const DEFAULT_TEMPLATES: ListingTemplate[] = [
@@ -208,6 +221,7 @@ export class MemStorage implements IStorage {
   private users: Map<string, User> = new Map();
   private products: Map<string, SavedProduct> = new Map();
   private templates: Map<string, ListingTemplate> = new Map();
+  private inventorySyncLogs: Map<string, InventorySyncLog> = new Map();
   protected settings: AppSettings = {
     id: "default",
     spreadsheetId: process.env.SPREADSHEET_ID || null,
@@ -343,6 +357,44 @@ export class MemStorage implements IStorage {
   async deleteTemplate(id: string): Promise<boolean> {
     if (DEFAULT_TEMPLATES.find(t => t.id === id)) return false;
     return this.templates.delete(id);
+  }
+
+  async createInventorySyncLog(log: Omit<InventorySyncLog, "id">): Promise<InventorySyncLog> {
+    const id = randomUUID();
+    const row: InventorySyncLog = {
+      id,
+      productId: log.productId,
+      requestPayload: log.requestPayload,
+      status: log.status,
+      responseStatus: log.responseStatus ?? null,
+      responseBody: log.responseBody ?? null,
+      errorMessage: log.errorMessage ?? null,
+      sentAt: log.sentAt ?? new Date(),
+      retryCount: log.retryCount ?? 0,
+    };
+    this.inventorySyncLogs.set(id, row);
+    return row;
+  }
+
+  async updateInventorySyncLog(
+    id: string,
+    updates: Partial<Omit<InventorySyncLog, "id">>,
+  ): Promise<InventorySyncLog | undefined> {
+    const existing = this.inventorySyncLogs.get(id);
+    if (!existing) return undefined;
+    const updated: InventorySyncLog = { ...existing, ...updates };
+    this.inventorySyncLogs.set(id, updated);
+    return updated;
+  }
+
+  async getInventorySyncLog(id: string): Promise<InventorySyncLog | undefined> {
+    return this.inventorySyncLogs.get(id);
+  }
+
+  async getInventorySyncLogs(status?: InventorySyncLog["status"]): Promise<InventorySyncLog[]> {
+    const rows = Array.from(this.inventorySyncLogs.values());
+    const filtered = status ? rows.filter((r) => r.status === status) : rows;
+    return filtered.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
   }
 }
 

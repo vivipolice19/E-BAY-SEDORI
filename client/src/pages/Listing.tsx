@@ -630,10 +630,12 @@ function ListingDetail({ product, settings, templates, onClose }: {
       if (!price || price <= 0) throw new Error("出品価格を確認してください");
       const imageUrls = (pendingEbayImageUrls ?? product.ebayImageUrls ?? product.sourceImageUrls ?? []) as string[];
       return apiRequest("POST", "/api/ebay/list", {
+        productId: product.id,
         title: listingTitle || product.name,
         description: listingDescription || product.name,
         categoryId: normalizedCat,
         price,
+        inventoryPrice: product.sourcePrice ?? Math.round(price),
         condition: ebayCondition || "Used",
         specifics: Object.keys(specifics).length > 0 ? specifics : undefined,
         imageUrls: imageUrls.length > 0 ? imageUrls : undefined,

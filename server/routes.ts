@@ -19,6 +19,7 @@ import { buildSmartSearchKeywords } from "./searchBoost";
 import { translateToJapanese } from "./translate";
 import { insertSavedProductSchema } from "@shared/schema";
 import { z } from "zod";
+import { InventorySyncService } from "./inventorySync";
 
 function settingsResponseWithListingFlags(settings: AppSettings) {
   return {
@@ -31,6 +32,7 @@ function settingsResponseWithListingFlags(settings: AppSettings) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  const inventorySyncService = new InventorySyncService(storage);
 
   // ---- eBay Search ----
   app.get("/api/ebay/search", async (req, res) => {
@@ -684,9 +686,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const {
-        title, description, categoryId, price, condition,
+        productId, title, description, categoryId, price, condition,
         specifics, imageUrls, weight, dispatchDays,
+        inventoryPrice,
       } = req.body as {
+        productId?: string;
         title: string;
         description: string;
         categoryId: string;
@@ -696,6 +700,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         imageUrls?: string[];
         weight?: number;
         dispatchDays?: number;
+        inventoryPrice?: number;
       };
 
       if (!title || !price || !categoryId) {
@@ -765,12 +770,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const itemId = itemIdMatch?.[1];
       const ebayUrl = itemId ? `https://www.ebay.com/itm/${itemId}` : undefined;
 
+      let inventorySyncLogId: string | undefined;
+      let inventorySyncStatus: string | undefined;
+      if (productId) {
+        try {
+          const syncLog = await inventorySyncService.syncAfterListing(
+            inventorySyncService.buildPayload({
+              productId,
+              title: title || "",
+              price: inventoryPrice ?? Math.round(price),
+            }),
+          );
+          inventorySyncLogId = syncLog.id;
+          inventorySyncStatus = syncLog.status;
+        } catch (syncErr) {
+          console.error("[Inventory Sync] unexpected exception:", syncErr);
+        }
+      } else {
+        console.warn("[Inventory Sync] skipped because productId was not provided");
+      }
+
       res.json({
         success: true,
         itemId,
         ebayUrl,
         ack,
         fees: feesMatch?.map(f => parseFloat(f.replace(/<\/?Fee>/g, ""))).filter(n => n > 0),
+        inventorySyncStatus,
+        inventorySyncLogId,
       });
     } catch (error: any) {
       console.error("[eBay AddItem] Exception:", error.message);
@@ -793,6 +820,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ domestic, agent, international, total, weight });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ---- Inventory Sync Logs ----
+  app.get("/api/inventory-sync/logs", async (req, res) => {
+    try {
+      const { status } = req.query as { status?: "success" | "failed" | "skipped" };
+      const logs = await storage.getInventorySyncLogs(status);
+      res.json(logs);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "在庫同期ログ取得エラー" });
+    }
+  });
+
+  app.post("/api/inventory-sync/retry/:logId", async (req, res) => {
+    try {
+      const log = await inventorySyncService.retryFailedLog(req.params.logId);
+      res.json({ success: true, log });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "在庫同期の再送エラー" });
     }
   });
 
