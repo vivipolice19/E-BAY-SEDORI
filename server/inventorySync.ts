@@ -102,18 +102,6 @@ export class InventorySyncService {
     logIdToUpdate?: string,
   ): Promise<InventorySyncLog> {
     const baseUrl = process.env.INVENTORY_BASE_URL?.trim() || INVENTORY_BASE_URL;
-    const token = process.env.INVENTORY_WEBHOOK_SECRET?.trim();
-    if (!token) {
-      return this.saveLog({
-        logIdToUpdate,
-        payload,
-        status: "failed",
-        responseStatus: null,
-        responseBody: null,
-        errorMessage: "INVENTORY_WEBHOOK_SECRET is missing",
-        retryCount: retryCountBase,
-      });
-    }
 
     let lastError = "";
     let lastStatus: number | null = null;
@@ -125,25 +113,10 @@ export class InventorySyncService {
       const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
       try {
-        const health = await this.fetchFn(`${baseUrl.replace(/\/$/, "")}/api/v1/sedori/health`, {
-          method: "GET",
-          signal: controller.signal,
-        });
-        if (!health.ok) {
-          lastError = `Health check failed with ${health.status}`;
-          throw new Error(lastError);
-        }
-        const healthJson = (await health.json().catch(() => ({}))) as { ok?: boolean };
-        if (!healthJson.ok) {
-          lastError = "Health response is not ok:true";
-          throw new Error(lastError);
-        }
-
         const res = await this.fetchFn(`${baseUrl.replace(/\/$/, "")}/api/v1/sedori/listings`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(payload),
           signal: controller.signal,

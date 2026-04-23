@@ -54,22 +54,17 @@ function payload() {
     mercari_url: "https://jp.mercari.com/item/abc",
     ebay_url: "https://www.ebay.com/itm/123",
     listed_at: "2026-04-22T12:34:56+09:00",
-    source: "sedori_app" as const,
   };
 }
 
 test("sync success creates success log", async () => {
   process.env.INVENTORY_SYNC_ENABLED = "true";
   process.env.INVENTORY_BASE_URL = "https://inventory.example.com";
-  process.env.INVENTORY_WEBHOOK_SECRET = "token";
 
   const storage = new FakeStorage();
-  let count = 0;
   const service = new InventorySyncService(
     storage,
-    (async (_url) => {
-      count++;
-      if (count === 1) return new Response("{\"ok\":true}", { status: 200 });
+    (async () => {
       return new Response("{\"success\":true,\"result\":\"created\"}", { status: 200 });
     }) as typeof fetch,
     async () => {},
@@ -83,15 +78,11 @@ test("sync success creates success log", async () => {
 test("sync failure creates failed log", async () => {
   process.env.INVENTORY_SYNC_ENABLED = "true";
   process.env.INVENTORY_BASE_URL = "https://inventory.example.com";
-  process.env.INVENTORY_WEBHOOK_SECRET = "token";
 
   const storage = new FakeStorage();
-  let count = 0;
   const service = new InventorySyncService(
     storage,
     (async () => {
-      count++;
-      if (count % 2 === 1) return new Response("{\"ok\":true}", { status: 200 });
       return new Response("fail", { status: 500 });
     }) as typeof fetch,
     async () => {},
@@ -105,7 +96,6 @@ test("sync failure creates failed log", async () => {
 test("sync disabled skips sending and stores skipped log", async () => {
   process.env.INVENTORY_SYNC_ENABLED = "false";
   process.env.INVENTORY_BASE_URL = "https://inventory.example.com";
-  process.env.INVENTORY_WEBHOOK_SECRET = "token";
 
   let called = false;
   const storage = new FakeStorage();
