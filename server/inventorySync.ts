@@ -1,17 +1,21 @@
 import type { InventorySyncLog } from "@shared/schema";
 import type { IStorage } from "./storage";
+import { randomUUID } from "crypto";
 
 const REQUEST_TIMEOUT_MS = 10_000;
-const MAX_RETRIES = 2;
-const BACKOFF_MS = [1000, 2000];
+const MAX_RETRIES = 3;
+const BACKOFF_MS = [1000, 3000, 9000];
+const INVENTORY_BASE_URL = "https://ebay-lowest-checker-1.onrender.com";
 
 export interface InventoryImportPayload {
-  product_id: string;
-  title: string;
-  price: number;
-  quantity: number;
-  listed_at: string;
-  source: "sedori_app";
+  event_id: string;
+  external_id: string;
+  mercari_url: string;
+  ebay_url: string;
+  purchase_price?: number;
+  profit_rate?: number;
+  title?: string;
+  listed_at?: string;
 }
 
 type SyncStatus = "success" | "failed" | "skipped";
@@ -45,18 +49,23 @@ export class InventorySyncService {
   ) {}
 
   buildPayload(input: {
-    productId: string;
-    title: string;
-    price: number;
+    externalId: string;
+    mercariUrl?: string | null;
+    ebayUrl?: string | null;
+    purchasePrice?: number | null;
+    profitRate?: number | null;
+    title?: string | null;
     listedAt?: Date;
   }): InventoryImportPayload {
     return {
-      product_id: input.productId,
-      title: input.title,
-      price: Math.round(input.price),
-      quantity: 1,
+      event_id: `evt_${randomUUID()}`,
+      external_id: input.externalId,
+      mercari_url: input.mercariUrl || "",
+      ebay_url: input.ebayUrl || "",
+      purchase_price: input.purchasePrice != null ? Math.round(input.purchasePrice) : undefined,
+      profit_rate: input.profitRate != null ? input.profitRate : undefined,
+      title: input.title || undefined,
       listed_at: toJstIso(input.listedAt ?? new Date()),
-      source: "sedori_app",
     };
   }
 
@@ -64,7 +73,7 @@ export class InventorySyncService {
     const enabled = (process.env.INVENTORY_SYNC_ENABLED ?? "false").toLowerCase() === "true";
     if (!enabled) {
       return this.storage.createInventorySyncLog({
-        productId: payload.product_id,
+        productId: payload.external_id,
         requestPayload: safeStringify(payload),
         status: "skipped",
         responseStatus: null,
@@ -92,16 +101,16 @@ export class InventorySyncService {
     retryCountBase: number,
     logIdToUpdate?: string,
   ): Promise<InventorySyncLog> {
-    const baseUrl = process.env.INVENTORY_BASE_URL?.trim();
-    const token = process.env.INVENTORY_API_TOKEN?.trim();
-    if (!baseUrl || !token) {
+    const baseUrl = process.env.INVENTORY_BASE_URL?.trim() || INVENTORY_BASE_URL;
+    const token = process.env.INVENTORY_WEBHOOK_SECRET?.trim();
+    if (!token) {
       return this.saveLog({
         logIdToUpdate,
         payload,
         status: "failed",
         responseStatus: null,
         responseBody: null,
-        errorMessage: "INVENTORY_BASE_URL or INVENTORY_API_TOKEN is missing",
+        errorMessage: "INVENTORY_WEBHOOK_SECRET is missing",
         retryCount: retryCountBase,
       });
     }
@@ -111,11 +120,26 @@ export class InventorySyncService {
     let lastBody: string | null = null;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const shouldRetry = attempt < MAX_RETRIES;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
       try {
-        const res = await this.fetchFn(`${baseUrl.replace(/\/$/, "")}/api/inventory/import`, {
+        const health = await this.fetchFn(`${baseUrl.replace(/\/$/, "")}/api/v1/sedori/health`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        if (!health.ok) {
+          lastError = `Health check failed with ${health.status}`;
+          throw new Error(lastError);
+        }
+        const healthJson = (await health.json().catch(() => ({}))) as { ok?: boolean };
+        if (!healthJson.ok) {
+          lastError = "Health response is not ok:true";
+          throw new Error(lastError);
+        }
+
+        const res = await this.fetchFn(`${baseUrl.replace(/\/$/, "")}/api/v1/sedori/listings`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -129,8 +153,26 @@ export class InventorySyncService {
         const text = await res.text();
         lastStatus = res.status;
         lastBody = text;
+        console.log("[Inventory Sync]", {
+          event_id: payload.event_id,
+          external_id: payload.external_id,
+          status_code: res.status,
+          response_body: text,
+        });
 
-        if (res.ok) {
+        let bodyJson: any = null;
+        try {
+          bodyJson = text ? JSON.parse(text) : null;
+        } catch {
+          bodyJson = null;
+        }
+
+        const isSuccess =
+          res.status === 200 &&
+          bodyJson?.success === true &&
+          ["created", "updated", "duplicate_event"].includes(bodyJson?.result);
+
+        if (isSuccess) {
           return this.saveLog({
             logIdToUpdate,
             payload,
@@ -143,12 +185,20 @@ export class InventorySyncService {
         }
 
         lastError = `Inventory API responded with ${res.status}`;
+        if (res.status >= 400 && res.status < 500) {
+          break;
+        }
       } catch (error: any) {
         clearTimeout(timer);
         lastError = error?.name === "AbortError" ? "Inventory API timeout" : error?.message || "Unknown sync error";
+        console.error("[Inventory Sync Error]", {
+          event_id: payload.event_id,
+          external_id: payload.external_id,
+          error: lastError,
+        });
       }
 
-      if (attempt < MAX_RETRIES) {
+      if (shouldRetry) {
         await this.sleep(BACKOFF_MS[attempt] ?? 1000);
       }
     }
@@ -174,7 +224,7 @@ export class InventorySyncService {
     retryCount: number;
   }): Promise<InventorySyncLog> {
     const row: Omit<InventorySyncLog, "id"> = {
-      productId: args.payload.product_id,
+      productId: args.payload.external_id,
       requestPayload: safeStringify(args.payload),
       status: args.status,
       responseStatus: args.responseStatus,

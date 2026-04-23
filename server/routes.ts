@@ -774,11 +774,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let inventorySyncStatus: string | undefined;
       if (productId) {
         try {
+          const product = await storage.getSavedProduct(productId);
           const syncLog = await inventorySyncService.syncAfterListing(
             inventorySyncService.buildPayload({
-              productId,
-              title: title || "",
-              price: inventoryPrice ?? Math.round(price),
+              externalId: productId,
+              mercariUrl: product?.sourceUrl ?? null,
+              ebayUrl: ebayUrl ?? product?.ebayUrl ?? null,
+              purchasePrice: inventoryPrice ?? product?.sourcePrice ?? null,
+              profitRate: product?.profitRate ?? null,
+              title: product?.name || title || "",
+              listedAt: product?.createdAt ?? new Date(),
             }),
           );
           inventorySyncLogId = syncLog.id;
