@@ -519,11 +519,11 @@ function ListingDetail({ product, settings, templates, onClose }: {
     staleTime: 10 * 60 * 1000,
   });
 
-  // Auto-apply Item Specifics on first load and auto-save to DB so sheet stays in sync
+  // Auto-apply Item Specifics and fill missing listing fields
   const [autoApplied, setAutoApplied] = useState(false);
   useEffect(() => {
-    if (specificsData && !autoApplied) {
-      setAutoApplied(true);
+    if (specificsData) {
+      if (!autoApplied) setAutoApplied(true);
       const autoSavePayload: Record<string, any> = {};
 
       if (Object.keys(specifics).length === 0 && Object.keys(specificsData.itemSpecifics).length > 0) {
@@ -534,15 +534,15 @@ function ListingDetail({ product, settings, templates, onClose }: {
           autoSavePayload.listingTitle = specificsData.title;
         }
       }
-      if (specificsData.categoryPath && !product.ebayCategoryPath) {
+      if (specificsData.categoryPath && !categoryPath) {
         setCategoryPath(specificsData.categoryPath);
         autoSavePayload.ebayCategoryPath = specificsData.categoryPath;
       }
-      if (specificsData.condition && !product.ebayCondition) {
+      if (specificsData.condition && !ebayCondition) {
         setEbayCondition(specificsData.condition);
         autoSavePayload.ebayCondition = specificsData.condition;
       }
-      if (specificsData.categoryId && !product.ebayCategoryId) {
+      if (specificsData.categoryId && !ebayCategoryId) {
         const cid = normalizeEbayCategoryId(specificsData.categoryId) || specificsData.categoryId;
         setEbayCategoryId(cid);
         autoSavePayload.ebayCategoryId = cid;
@@ -560,7 +560,7 @@ function ListingDetail({ product, settings, templates, onClose }: {
         apiRequest("PATCH", `/api/products/${product.id}`, autoSavePayload).catch(console.error);
       }
     }
-  }, [specificsData]);
+  }, [specificsData, autoApplied, specifics, listingTitle, categoryPath, ebayCondition, ebayCategoryId, listingDescription, product.id]);
 
   // Weight from specifics
   const extractedWeight = extractWeightFromSpecifics(specifics);

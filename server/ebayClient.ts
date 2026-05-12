@@ -898,7 +898,8 @@ export async function getEbayItemDetail(itemId: string): Promise<EbayItemDetail>
   }
 
   const data = await res.json();
-  return parseItemDetail(data);
+  const parsed = parseItemDetail(data);
+  return await enrichItemDetailFallback(parsed, data);
 }
 
 function parseItemDetail(data: any): EbayItemDetail {
@@ -924,8 +925,8 @@ function parseItemDetail(data: any): EbayItemDetail {
     price: data.price ? parseFloat(data.price.value) : undefined,
     currency: data.price?.currency,
     condition: data.condition || data.conditionDisplayName,
-    categoryId: data.categoryId || data.categories?.[0]?.categoryId || data.primaryItemGroup?.itemGroupId || undefined,
-    categoryPath: data.categoryPath,
+    categoryId: data.categoryId || data.categories?.[0]?.categoryId || undefined,
+    categoryPath: data.categoryPath || data.categories?.map((c: any) => c?.categoryName).filter(Boolean).join(" > ") || undefined,
     imageUrl: data.image?.imageUrl,
     additionalImages: images,
     itemSpecifics: specifics,
@@ -937,6 +938,94 @@ function parseItemDetail(data: any): EbayItemDetail {
     } : undefined,
     itemUrl: data.itemWebUrl,
   };
+}
+
+function stripHtmlTags(input: string): string {
+  return input
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractJsonLdFromHtml(html: string): any | null {
+  const blocks = [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const m of blocks) {
+    const raw = m[1]?.trim();
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const product = parsed.find((x) => x?.["@type"] === "Product");
+        if (product) return product;
+      }
+      if (parsed?.["@type"] === "Product") return parsed;
+      if (parsed?.mainEntity?.["@type"] === "Product") return parsed.mainEntity;
+    } catch {
+      // ignore malformed ld+json
+    }
+  }
+  return null;
+}
+
+async function enrichItemDetailFallback(detail: EbayItemDetail, rawData: any): Promise<EbayItemDetail> {
+  // If key fields already exist, keep current result.
+  const alreadyGood =
+    !!detail.condition &&
+    !!detail.categoryId &&
+    !!detail.categoryPath &&
+    !!detail.description;
+  if (alreadyGood) return detail;
+
+  const itemUrl = detail.itemUrl || rawData?.itemWebUrl;
+  if (!itemUrl) return detail;
+
+  try {
+    const htmlRes = await fetch(itemUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; sedori-bot/1.0)",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    if (!htmlRes.ok) return detail;
+    const html = await htmlRes.text();
+    const jsonLd = extractJsonLdFromHtml(html);
+
+    const fallbackCondition =
+      detail.condition ||
+      jsonLd?.itemCondition?.split("/").pop()?.replace(/_/g, " ") ||
+      undefined;
+
+    const fallbackCategoryPath =
+      detail.categoryPath ||
+      (Array.isArray(jsonLd?.category)
+        ? jsonLd.category.join(" > ")
+        : typeof jsonLd?.category === "string"
+        ? jsonLd.category
+        : undefined);
+
+    const fallbackCategoryId =
+      detail.categoryId ||
+      rawData?.categoryId ||
+      html.match(/"categoryId"\s*:\s*"(\d+)"/)?.[1] ||
+      undefined;
+
+    const fallbackDescription =
+      detail.description ||
+      (typeof jsonLd?.description === "string" ? stripHtmlTags(jsonLd.description) : undefined) ||
+      stripHtmlTags(html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i)?.[1] || "");
+
+    return {
+      ...detail,
+      condition: fallbackCondition,
+      categoryId: fallbackCategoryId,
+      categoryPath: fallbackCategoryPath,
+      description: fallbackDescription || detail.description,
+    };
+  } catch {
+    return detail;
+  }
 }
 
 // ---- Generate listing description from template ----
