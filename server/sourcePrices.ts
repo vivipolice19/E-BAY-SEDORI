@@ -5,8 +5,8 @@ import { existsSync } from "fs";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** 全サイト合算の上限（無限グルグル防止） */
-const SOURCE_FETCH_TOTAL_TIMEOUT_MS = 75_000;
+/** 全サイト合算の上限（無限グルグル防止）— 並列の最遅サイトに合わせる */
+const SOURCE_FETCH_TOTAL_TIMEOUT_MS = 92_000;
 
 export interface SourceItem {
   title: string;
@@ -105,7 +105,11 @@ async function getBrowser(): Promise<Browser> {
     };
     if (executablePath) launchOpts.executablePath = executablePath;
 
-    const b = await chromium.launch(launchOpts);
+    const b = await withTimeout(
+      chromium.launch(launchOpts),
+      70_000,
+      "Chromium起動",
+    );
     browser = b;
     b.on("disconnected", () => {
       browser = null;
@@ -140,13 +144,13 @@ async function fetchMercariPrices(keyword: string): Promise<SourceItem[]> {
     const url = `https://jp.mercari.com/search?keyword=${encodeURIComponent(keyword)}&status=on_sale&sort=price_asc`;
     await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 45_000,
+      timeout: 58_000,
       referer: "https://jp.mercari.com/",
     });
     await page
-      .waitForSelector('[data-testid="thumbnail-link"], a[href*="/item/"]', { timeout: 18_000 })
+      .waitForSelector('[data-testid="thumbnail-link"], a[href*="/item/"]', { timeout: 24_000 })
       .catch(() => {});
-    await sleep(2500);
+    await sleep(2200);
     try {
       await page.waitForFunction(
         () => document.querySelectorAll('a[href*="/item/"]').length >= 2,
@@ -637,7 +641,7 @@ async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
   const [mercariItems, yahooItems, yahooShoppingItems, rakumaItems, surugayaItems] = await Promise.all([
     withTimeout(
       fetchWithKeywordFallback("メルカリ", fetchMercariPrices, keywordCandidates, errors),
-      30_000,
+      46_000,
       "メルカリ",
     ).catch((e: any) => {
       errors["メルカリ"] = String(e?.message || e);
@@ -645,7 +649,7 @@ async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
     }),
     withTimeout(
       fetchWithKeywordFallback("ヤフオク", fetchYahooPrices, keywordCandidates, errors),
-      30_000,
+      38_000,
       "ヤフオク",
     ).catch((e: any) => {
       errors["ヤフオク"] = String(e?.message || e);
@@ -653,7 +657,7 @@ async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
     }),
     withTimeout(
       fetchWithKeywordFallback("Yahoo!ショッピング", fetchYahooShoppingPrices, keywordCandidates, errors),
-      30_000,
+      38_000,
       "Yahoo!ショッピング",
     ).catch((e: any) => {
       errors["Yahoo!ショッピング"] = String(e?.message || e);
@@ -661,7 +665,7 @@ async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
     }),
     withTimeout(
       fetchWithKeywordFallback("ラクマ", fetchRakumaPrices, keywordCandidates, errors),
-      26_000,
+      34_000,
       "ラクマ",
     ).catch((e: any) => {
       errors["ラクマ"] = String(e?.message || e);
@@ -669,7 +673,7 @@ async function fetchSourcePricesCore(keyword: string): Promise<SourceResults> {
     }),
     withTimeout(
       fetchWithKeywordFallback("駿河屋", fetchSurugayaPrices, keywordCandidates, errors),
-      26_000,
+      34_000,
       "駿河屋",
     ).catch((e: any) => {
       errors["駿河屋"] = String(e?.message || e);
@@ -768,6 +772,95 @@ function mapMercariConditionToEbay(jpCondition: string): string {
   if (c.includes("傷や汚れあり")) return "Acceptable";
   if (c.includes("全体的に状態が悪い")) return "For Parts or Not Working";
   return "Used";
+}
+
+const MERCARI_CONDITION_KEYWORDS = [
+  "新品、未使用",
+  "未使用に近い",
+  "目立った傷や汚れなし",
+  "やや傷や汚れあり",
+  "傷や汚れあり",
+  "全体的に状態が悪い",
+] as const;
+
+function stripHtmlScripts(html: string): string {
+  return html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ");
+}
+
+function parseMercariConditionFromHtml(html: string): string | undefined {
+  const body = stripHtmlScripts(html);
+  for (const k of MERCARI_CONDITION_KEYWORDS) {
+    if (body.includes(k)) return k;
+  }
+  return undefined;
+}
+
+function extractOgDescriptionFromHtml(html: string): string | undefined {
+  const m =
+    html.match(/property="og:description"\s+content="([^"]*)"/i) ||
+    html.match(/name="og:description"\s+content="([^"]*)"/i);
+  if (!m) return undefined;
+  const raw = m[1]
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
+  const t = raw.trim();
+  return t.length >= 4 ? t.slice(0, 800) : undefined;
+}
+
+/** __NEXT_DATA__ 等の JSON から item 系の price フィールドのみ拾う（viewCount 等の数値は除外） */
+function extractMercariPriceFromNextData(html: string): number {
+  const m = html.match(/<script\s+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (!m) return 0;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(m[1].trim());
+  } catch {
+    return 0;
+  }
+  return findMercariPriceInJson(parsed, 0);
+}
+
+function findMercariPriceInJson(obj: unknown, depth: number): number {
+  if (depth > 32 || obj === null || obj === undefined) return 0;
+
+  if (Array.isArray(obj)) {
+    for (const el of obj) {
+      const p = findMercariPriceInJson(el, depth + 1);
+      if (p > 0) return p;
+    }
+    return 0;
+  }
+
+  if (typeof obj !== "object") return 0;
+
+  const o = obj as Record<string, unknown>;
+  for (const key of ["price", "itemPrice", "salePrice", "currentPrice", "displayPrice", "fixedPrice"]) {
+    const v = o[key];
+    if (typeof v === "number" && Number.isFinite(v) && v >= 300 && v < 10_000_000) return Math.round(v);
+    if (typeof v === "string" && /^\d{3,7}$/.test(v)) {
+      const n = parseInt(v, 10);
+      if (n >= 300 && n < 10_000_000) return n;
+    }
+  }
+
+  const skipRecurse = new Set([
+    "viewCount",
+    "likeCount",
+    "commentCount",
+    "seller",
+    "user",
+    "shippingClass",
+    "variants",
+  ]);
+  for (const [k, v] of Object.entries(o)) {
+    if (skipRecurse.has(k)) continue;
+    if (v !== null && typeof v === "object") {
+      const p = findMercariPriceInJson(v, depth + 1);
+      if (p > 0) return p;
+    }
+  }
+  return 0;
 }
 
 function detectPlatform(url: string): string {
@@ -933,109 +1026,167 @@ const PRICE_EVAL_SCRIPT = `(function(targetUrl) {
   return { price: price, currency: currency, title: title.replace(/\\s+/g, ' ').trim().substring(0, 100), imageUrls: imageUrls.slice(0, 20) };
 })`;
 
-/** メルカリ商品 HTML を HTTP のみで取得し、SSR に価格があれば Playwright を省略（高速） */
+/** HTML からメルカリ商品の価格・タイトル・OG 画像を抽出（Playwright 省略用） */
+function scrapeMercariListingFromHtml(html: string, decodeEnt: (s: string) => string): {
+  price: number;
+  title: string;
+  imageUrls: string[];
+} {
+  let price = 0;
+  const metaAmt =
+    html.match(/property="product:price:amount"\s+content="([\d.]+)"/i) ||
+    html.match(/name="product:price:amount"\s+content="([\d.]+)"/i);
+  if (metaAmt) price = Math.round(parseFloat(metaAmt[1]));
+  if (price <= 0) {
+    const rscMeta = html.match(/\\"name\\":\\"product:price:amount\\",\\"content\\":\\"([\d.]+)\\"/i);
+    if (rscMeta) price = Math.round(parseFloat(rscMeta[1]));
+  }
+
+  if (price <= 0) {
+    const m2 = html.match(/"price"\s*:\s*(\d{3,7})\b/);
+    if (m2) {
+      const p = parseInt(m2[1], 10);
+      if (p >= 100 && p < 20_000_000) price = p;
+    }
+  }
+  if (price <= 0) {
+    const m3 = html.match(/"itemPrice"\s*:\s*(\d{3,7})\b/);
+    if (m3) {
+      const p = parseInt(m3[1], 10);
+      if (p >= 100 && p < 20_000_000) price = p;
+    }
+  }
+  if (price <= 0) {
+    const mEsc = html.match(/\\"price\\"\s*:\s*(\d{3,7})\b/);
+    if (mEsc) {
+      const p = parseInt(mEsc[1], 10);
+      if (p >= 100 && p < 20_000_000) price = p;
+    }
+  }
+  if (price <= 0) {
+    const mEsc2 = html.match(/\\"itemPrice\\"\s*:\s*(\d{3,7})\b/);
+    if (mEsc2) {
+      const p = parseInt(mEsc2[1], 10);
+      if (p >= 100 && p < 20_000_000) price = p;
+    }
+  }
+  if (price <= 0) {
+    const np = extractMercariPriceFromNextData(html);
+    if (np >= 300 && np < 10_000_000) price = np;
+  }
+
+  let title = "";
+  const ogT =
+    html.match(/property="og:title"\s+content="([^"]+)"/i) ||
+    html.match(/name="og:title"\s+content="([^"]+)"/i);
+  if (ogT) title = decodeEnt(ogT[1]).trim();
+  if (!title) {
+    const rscTitle = html.match(/\\"(?:property|name)\\":\\"og:title\\",\\"content\\":\\"([^\\"]+)\\"/i);
+    if (rscTitle) title = decodeEnt(rscTitle[1]).trim();
+  }
+  if (!title) {
+    const t2 = html.match(/<title>([^<]{4,200})<\/title>/i);
+    if (t2) title = decodeEnt(t2[1]).replace(/\s*-\s*メルカリ\s*$/, "").trim();
+  }
+
+  const imageUrls: string[] = [];
+  const ogI = html.match(/(?:property|name)="og:image"\s+content="([^"]+)"/gi);
+  if (ogI) {
+    for (const m of ogI) {
+      const sub = m.match(/content="([^"]+)"/i);
+      if (sub) {
+        const u = decodeEnt(sub[1]);
+        if (u.startsWith("http") && imageUrls.indexOf(u) < 0) imageUrls.push(u);
+      }
+      if (imageUrls.length >= 6) break;
+    }
+  }
+  if (imageUrls.length === 0) {
+    const rscImages = Array.from(
+      html.matchAll(/\\"(?:property|name)\\":\\"og:image\\",\\"content\\":\\"([^\\"]+)\\"/gi),
+    );
+    for (const m of rscImages) {
+      const u = decodeEnt(m[1]);
+      if (u.startsWith("http") && imageUrls.indexOf(u) < 0) imageUrls.push(u);
+      if (imageUrls.length >= 6) break;
+    }
+  }
+
+  return { price, title, imageUrls };
+}
+
+/** メルカリ商品 HTML を HTTP のみで取得し、SSR / __NEXT_DATA__ に価格があれば Playwright を省略（高速） */
 async function tryMercariProductFromHttp(targetUrl: string): Promise<UrlPriceResult | null> {
   if (!targetUrl.includes("jp.mercari.com")) return null;
   if (!targetUrl.includes("/item/") && !targetUrl.includes("/shops/product/")) return null;
   if (targetUrl.includes("/search")) return null;
-  try {
-    const res = await fetch(targetUrl, {
+
+  const decodeEnt = (s: string) =>
+    s
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, '"')
+      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">");
+
+  const headerSets = [
+    {
+      label: "desktop",
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
-        Accept: "text/html,application/xhtml+xml",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         Referer: "https://jp.mercari.com/",
       },
-      redirect: "follow",
-      signal: AbortSignal.timeout(9_000),
-    });
-    if (!res.ok) return null;
-    const html = (await res.text()).slice(0, 450_000);
+    },
+    {
+      label: "mobile",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Referer: "https://jp.mercari.com/",
+      },
+    },
+  ];
 
-    const decodeEnt = (s: string) =>
-      s
-        .replace(/&amp;/g, "&")
-        .replace(/&quot;/g, '"')
-        .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">");
+  for (const hs of headerSets) {
+    try {
+      const res = await fetch(targetUrl, {
+        headers: hs.headers,
+        redirect: "follow",
+        signal: AbortSignal.timeout(18_000),
+      });
+      if (!res.ok) continue;
+      const html = (await res.text()).slice(0, 900_000);
+      const { price, title, imageUrls } = scrapeMercariListingFromHtml(html, decodeEnt);
+      if (price <= 0) continue;
 
-    let price = 0;
-    const metaAmt =
-      html.match(/property="product:price:amount"\s+content="([\d.]+)"/i) ||
-      html.match(/name="product:price:amount"\s+content="([\d.]+)"/i);
-    if (metaAmt) price = Math.round(parseFloat(metaAmt[1]));
-    if (price <= 0) {
-      const rscMeta = html.match(/\\"name\\":\\"product:price:amount\\",\\"content\\":\\"([\d.]+)\\"/i);
-      if (rscMeta) price = Math.round(parseFloat(rscMeta[1]));
-    }
+      const sourceCondition = parseMercariConditionFromHtml(html);
+      const sourceDescription = extractOgDescriptionFromHtml(html);
+      const ebayConditionMapped = sourceCondition ? mapMercariConditionToEbay(sourceCondition) : undefined;
 
-    if (price <= 0) {
-      const m2 = html.match(/"price"\s*:\s*(\d{3,7})\b/);
-      if (m2) {
-        const p = parseInt(m2[1], 10);
-        if (p >= 100 && p < 20_000_000) price = p;
-      }
+      console.log(`[fetchUrlPrice] Mercari HTTP fast path (${hs.label}) price=${price} cond=${sourceCondition || "-"}`);
+      return {
+        title: title || targetUrl,
+        price,
+        currency: "JPY",
+        url: targetUrl,
+        platform: "メルカリ",
+        imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+        sourceCondition: sourceCondition || undefined,
+        sourceDescription: sourceDescription || undefined,
+        ebayConditionMapped: ebayConditionMapped || undefined,
+      };
+    } catch (e: any) {
+      console.warn(
+        `[fetchUrlPrice] Mercari HTTP ${hs.label} skip: ${String(e?.message || e).slice(0, 72)}`,
+      );
     }
-    if (price <= 0) {
-      const m3 = html.match(/"itemPrice"\s*:\s*(\d{3,7})\b/);
-      if (m3) {
-        const p = parseInt(m3[1], 10);
-        if (p >= 100 && p < 20_000_000) price = p;
-      }
-    }
-
-    let title = "";
-    const ogT =
-      html.match(/property="og:title"\s+content="([^"]+)"/i) ||
-      html.match(/name="og:title"\s+content="([^"]+)"/i);
-    if (ogT) title = decodeEnt(ogT[1]).trim();
-    if (!title) {
-      const rscTitle = html.match(/\\"(?:property|name)\\":\\"og:title\\",\\"content\\":\\"([^\\"]+)\\"/i);
-      if (rscTitle) title = decodeEnt(rscTitle[1]).trim();
-    }
-    if (!title) {
-      const t2 = html.match(/<title>([^<]{4,200})<\/title>/i);
-      if (t2) title = decodeEnt(t2[1]).replace(/\s*-\s*メルカリ\s*$/, "").trim();
-    }
-
-    const imageUrls: string[] = [];
-    const ogI = html.match(/(?:property|name)="og:image"\s+content="([^"]+)"/gi);
-    if (ogI) {
-      for (const m of ogI) {
-        const sub = m.match(/content="([^"]+)"/i);
-        if (sub) {
-          const u = decodeEnt(sub[1]);
-          if (u.startsWith("http") && imageUrls.indexOf(u) < 0) imageUrls.push(u);
-        }
-        if (imageUrls.length >= 6) break;
-      }
-    }
-    if (imageUrls.length === 0) {
-      const rscImages = [...html.matchAll(/\\"(?:property|name)\\":\\"og:image\\",\\"content\\":\\"([^\\"]+)\\"/gi)];
-      for (const m of rscImages) {
-        const u = decodeEnt(m[1]);
-        if (u.startsWith("http") && imageUrls.indexOf(u) < 0) imageUrls.push(u);
-        if (imageUrls.length >= 6) break;
-      }
-    }
-
-    if (price <= 0) return null;
-
-    console.log(`[fetchUrlPrice] Mercari HTTP fast path price=${price}`);
-    return {
-      title: title || targetUrl,
-      price,
-      currency: "JPY",
-      url: targetUrl,
-      platform: "メルカリ",
-      imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
-    };
-  } catch (e: any) {
-    console.warn(`[fetchUrlPrice] Mercari HTTP skip: ${String(e?.message || e).slice(0, 60)}`);
-    return null;
   }
+  return null;
 }
 
 export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> {
@@ -1066,7 +1217,7 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
 
     await page.goto(targetUrl, {
       waitUntil: waitCondition as any,
-      timeout: 50_000,
+      timeout: isMercariProduct ? 62_000 : 52_000,
       ...(isMercariProduct ? { referer: "https://jp.mercari.com/" } : {}),
     });
     await sleep(extraWait);
@@ -1221,7 +1372,7 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
       const yahooScript = "(function() { " +
         "var bodyText = document.body ? (document.body.innerText || '') : ''; " +
         "var condition = ''; " +
-        "var condKeywords = ['新品', '未使用に近い', '目立った傘や汚れなし', 'やや傘や汚れあり', '傘や汚れあり']; " +
+        "var condKeywords = ['新品', '未使用に近い', '目立った傷や汚れなし', 'やや傷や汚れあり', '傷や汚れあり']; " +
         "for (var ci = 0; ci < condKeywords.length; ci++) { if (bodyText.includes(condKeywords[ci])) { condition = condKeywords[ci]; break; } } " +
         "var description = ''; " +
         "var descEl = document.querySelector('#description, .ProductDetail__description'); " +
