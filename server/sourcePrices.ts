@@ -869,7 +869,7 @@ function detectPlatform(url: string): string {
   if (url.includes("rakuten.co.jp")) return "楽天";
   if (url.includes("jp.mercari.com")) return "メルカリ";
   if (url.includes("auctions.yahoo.co.jp")) return "ヤフオク";
-  if (url.includes("shopping.yahoo.co.jp")) return "Yahoo!ショッピング";
+  if (url.includes("shopping.yahoo.co.jp") || url.includes("paypaymall.yahoo.co.jp")) return "Yahoo!ショッピング";
   if (url.includes("yodobashi.com")) return "ヨドバシ";
   if (url.includes("biccamera.com") || url.includes("bic-camera.com")) return "ビックカメラ";
   if (url.includes("kakaku.com")) return "価格.com";
@@ -953,6 +953,7 @@ const PRICE_EVAL_SCRIPT = `(function(targetUrl) {
       '#price_inside_buybox', '#tp_price_block_total_price_ww .a-offscreen',
       '#newBuyBoxPrice', '#buyNewSection .a-color-price',
       '.price2', '#priceCalculationConfig', '[class*="checkout-product-price"]',
+      '[class*="styles_price_num__"]', '[class*="Price__emphasis"]', '[class*="productDetail"] [class*="price"]',
       '#priceBlock .Price__value', '.priceBlock .price--emphasis',
       '[class*="price--emphasis"]', '[class*="ItemPrice"]', '.elPriceNum',
       '[class*="merPrice"] [class*="number"]', '[data-testid="price"]',
@@ -1189,6 +1190,167 @@ async function tryMercariProductFromHttp(targetUrl: string): Promise<UrlPriceRes
   return null;
 }
 
+function decodeHtmlEntBasic(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+/** Yahoo!ショッピング店舗URL等の HTML から価格・タイトル・画像を抽出（Playwright 省略） */
+function extractYahooShoppingFromHtml(html: string): {
+  price: number;
+  title: string;
+  imageUrls: string[];
+  sourceDescription?: string;
+} {
+  let price = 0;
+  const metaAmt = html.match(/property="product:price:amount"\s+content="([\d.]+)"/i);
+  if (metaAmt) {
+    const n = Math.round(parseFloat(metaAmt[1]));
+    if (n >= 100 && n < 10_000_000) price = n;
+  }
+
+  if (price <= 0) {
+    const scriptRe = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let sm: RegExpExecArray | null;
+    outer: while ((sm = scriptRe.exec(html)) !== null) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(sm[1].trim());
+      } catch {
+        continue;
+      }
+      const queue: unknown[] = [parsed];
+      while (queue.length) {
+        const node = queue.shift();
+        if (node === null || node === undefined) continue;
+        if (Array.isArray(node)) {
+          for (const x of node) queue.push(x);
+          continue;
+        }
+        if (typeof node !== "object") continue;
+        const o = node as Record<string, unknown>;
+        if (Array.isArray(o["@graph"])) {
+          for (const g of o["@graph"] as unknown[]) queue.push(g);
+        }
+
+        const offers = o["offers"];
+        if (offers) {
+          const arr = Array.isArray(offers) ? offers : [offers];
+          for (const off of arr) {
+            if (!off || typeof off !== "object") continue;
+            const pv = (off as Record<string, unknown>).price;
+            const n =
+              typeof pv === "number"
+                ? pv
+                : typeof pv === "string"
+                  ? parseFloat(pv.replace(/,/g, ""))
+                  : 0;
+            if (n >= 100 && n < 10_000_000) {
+              price = Math.round(n);
+              break outer;
+            }
+          }
+        }
+        const typ = o["@type"];
+        const types = Array.isArray(typ) ? typ.map(String) : typ ? [String(typ)] : [];
+        if (types.includes("Product") && typeof o.price === "number") {
+          const n = o.price;
+          if (n >= 100 && n < 10_000_000) {
+            price = Math.round(n);
+            break outer;
+          }
+        }
+      }
+    }
+  }
+
+  if (price <= 0) {
+    const m = html.match(/class="[^"]*elPriceNum[^"]*"[^>]*>([\s\S]*?)<\//i);
+    if (m) {
+      const n = parseInt(m[1].replace(/[,，\s円\u00a0]/g, ""), 10);
+      if (!isNaN(n) && n >= 100 && n < 10_000_000) price = n;
+    }
+  }
+  if (price <= 0) {
+    const m2 = html.match(/>([\d,]+)\s*円\s*</);
+    if (m2) {
+      const n = parseInt(m2[1].replace(/,/g, ""), 10);
+      if (!isNaN(n) && n >= 100 && n < 10_000_000) price = n;
+    }
+  }
+
+  let title = "";
+  const ogT = html.match(/property="og:title"\s+content="([^"]+)"/i);
+  if (ogT) title = decodeHtmlEntBasic(ogT[1]).trim();
+  if (!title) {
+    const t2 = html.match(/<title>([^<]{4,300})<\/title>/i);
+    if (t2) {
+      title = decodeHtmlEntBasic(t2[1])
+        .replace(/\s*-\s*Yahoo!\s*ショッピング.*$/i, "")
+        .replace(/\s*:\s*Yahoo!\s*ショッピング.*$/i, "")
+        .trim();
+    }
+  }
+
+  const imageUrls: string[] = [];
+  const ogI = html.match(/property="og:image"\s+content="([^"]+)"/i);
+  if (ogI) {
+    const u = decodeHtmlEntBasic(ogI[1]);
+    if (u.startsWith("http")) imageUrls.push(u);
+  }
+
+  let sourceDescription: string | undefined;
+  const ogD = html.match(/property="og:description"\s+content="([^"]*)"/i);
+  if (ogD) {
+    const d = decodeHtmlEntBasic(ogD[1]).trim();
+    if (d.length >= 4) sourceDescription = d.slice(0, 800);
+  }
+
+  return { price, title, imageUrls, sourceDescription };
+}
+
+async function tryYahooShoppingProductFromHttp(targetUrl: string): Promise<UrlPriceResult | null> {
+  const hostOk =
+    targetUrl.includes("shopping.yahoo.co.jp") || targetUrl.includes("paypaymall.yahoo.co.jp");
+  if (!hostOk || targetUrl.includes("auctions.yahoo.co.jp")) return null;
+
+  try {
+    const res = await fetch(targetUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Referer: "https://shopping.yahoo.co.jp/",
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(22_000),
+    });
+    if (!res.ok) return null;
+    const html = (await res.text()).slice(0, 1_200_000);
+    const { price, title, imageUrls, sourceDescription } = extractYahooShoppingFromHtml(html);
+    if (price <= 0) return null;
+
+    console.log(`[fetchUrlPrice] Yahoo!Shopping HTTP fast path price=${price}`);
+    return {
+      title: title || targetUrl,
+      price,
+      currency: "JPY",
+      url: targetUrl,
+      platform: "Yahoo!ショッピング",
+      imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+      sourceDescription: sourceDescription || undefined,
+    };
+  } catch (e: any) {
+    console.warn(`[fetchUrlPrice] Yahoo HTTP skip: ${String(e?.message || e).slice(0, 80)}`);
+    return null;
+  }
+}
+
 export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> {
     const platform = detectPlatform(targetUrl);
 
@@ -1198,9 +1360,18 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
       (targetUrl.includes("/item/") || targetUrl.includes("/shops/product/")) &&
       !targetUrl.includes("/search");
 
+    const isYahooShoppingProduct =
+      (targetUrl.includes("shopping.yahoo.co.jp") || targetUrl.includes("paypaymall.yahoo.co.jp")) &&
+      !targetUrl.includes("auctions.yahoo.co.jp");
+
     if (isMercariProduct) {
       const httpHit = await tryMercariProductFromHttp(targetUrl);
       if (httpHit && httpHit.price > 0) return httpHit;
+    }
+
+    if (isYahooShoppingProduct) {
+      const yhHit = await tryYahooShoppingProductFromHttp(targetUrl);
+      if (yhHit && yhHit.price > 0) return yhHit;
     }
 
     const ctx = await newContext();
@@ -1213,14 +1384,38 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
     const isAmazon = targetUrl.includes("amazon.co.jp") || targetUrl.includes("amazon.com");
 
     const waitCondition = "domcontentloaded";
-    const extraWait = isMercariProduct ? 1400 : isYahooAuction ? 900 : isAmazon ? 1200 : 700;
+    const extraWait = isMercariProduct
+      ? 1400
+      : isYahooAuction
+        ? 900
+        : isYahooShoppingProduct
+          ? 2600
+          : isAmazon
+            ? 1200
+            : 700;
+
+    const referer = isMercariProduct
+      ? "https://jp.mercari.com/"
+      : isYahooShoppingProduct
+        ? "https://shopping.yahoo.co.jp/"
+        : undefined;
 
     await page.goto(targetUrl, {
       waitUntil: waitCondition as any,
-      timeout: isMercariProduct ? 62_000 : 52_000,
-      ...(isMercariProduct ? { referer: "https://jp.mercari.com/" } : {}),
+      timeout: isMercariProduct || isYahooShoppingProduct ? 62_000 : 52_000,
+      ...(referer ? { referer } : {}),
     });
     await sleep(extraWait);
+
+    if (isYahooShoppingProduct) {
+      await page
+        .waitForSelector(
+          '.elPriceNum, #priceCalculationConfig, [itemprop="price"], meta[property="product:price:amount"], [class*="Price__emphasis"], [class*="styles_price_num__"]',
+          { timeout: 14_000 },
+        )
+        .catch(() => {});
+      await sleep(900);
+    }
 
     // For Mercari items, wait for price element（短めで失敗時は評価スクリプトへ）
     if (isMercariProduct) {
@@ -1366,6 +1561,18 @@ export async function fetchUrlPrice(targetUrl: string): Promise<UrlPriceResult> 
         sourceWeightG = sizeMap[mercariData.shippingSize];
       }
       console.log('[fetchUrlPrice] Mercari weight=' + (sourceWeightG || 0) + 'g size=' + (mercariData.shippingSize || 'none'));
+    }
+
+    if (isYahooShoppingProduct) {
+      const ysScript =
+        "(function() { " +
+        "var d = ''; " +
+        "var el = document.querySelector('#mds_comm_text, #itemDetailSpecification, [class*=\"DetailText\"], [class*=\"description\"]'); " +
+        "if (el) d = (el.textContent || '').trim().substring(0, 800); " +
+        "return { description: d }; " +
+        "})()";
+      const ysData = (await page.evaluate(ysScript)) as { description?: string };
+      if (ysData.description && !sourceDescription) sourceDescription = ysData.description;
     }
 
     if (isYahooAuction && !sourceCondition) {

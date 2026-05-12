@@ -196,9 +196,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ error: "有効なURLを入力してください" });
       }
       const result = await fetchUrlPrice(url);
-      res.json(result);
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      return res.json(result);
     } catch (error: any) {
-      res.status(500).json({ error: error.message || "URL取得エラー" });
+      console.error("[/api/source-url]", error);
+      return res.status(500).json({
+        error: error.message || "URL取得エラー",
+        title: "",
+        price: 0,
+        currency: "JPY",
+        url: typeof (req.body as { url?: string })?.url === "string" ? (req.body as { url: string }).url : "",
+        platform: "カスタムURL",
+      });
     }
   });
 

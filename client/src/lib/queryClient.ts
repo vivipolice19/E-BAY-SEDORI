@@ -1,5 +1,31 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+/** 空ボディ・HTML エラーページでも落ちないよう text→JSON（/api/source-url 等） */
+export async function parseApiResponse<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  let data: unknown = null;
+  if (text.trim()) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(
+        `サーバー応答を解析できませんでした（${res.status}）。一時的な障害やタイムアウトの可能性があります。`,
+      );
+    }
+  }
+  if (!res.ok) {
+    const msg =
+      data && typeof data === "object" && data !== null && "error" in data
+        ? String((data as { error: unknown }).error)
+        : res.statusText || "取得失敗";
+    throw new Error(msg);
+  }
+  if (data === null) {
+    throw new Error("サーバーから空の応答がありました。しばらくして再試行してください。");
+  }
+  return data as T;
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;

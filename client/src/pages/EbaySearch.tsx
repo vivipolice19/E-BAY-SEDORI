@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, parseApiResponse } from "@/lib/queryClient";
 import type { EbayItem, AppSettings, EbaySoldResearchMeta } from "@shared/schema";
 import {
   Search, Bookmark, ExternalLink, Package, Tag,
@@ -382,8 +382,7 @@ function CustomUrlPanel({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url }),
     });
-    if (!res.ok) { const e = await res.json(); throw new Error(e.error || "取得失敗"); }
-    return res.json();
+    return parseApiResponse<UrlResult>(res);
   };
 
   const urlMutation = useMutation({
@@ -412,13 +411,21 @@ function CustomUrlPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-      if (!res.ok) {
-        let msg = "取得失敗";
-        try { const e = await res.json(); msg = e.error || msg; } catch {}
-        out.push({ url, title: "", price: 0, currency: "JPY", platform: "カスタムURL", error: msg, priceInJpy: 0 });
+      let data: UrlResult;
+      try {
+        data = await parseApiResponse<UrlResult>(res);
+      } catch (e: any) {
+        out.push({
+          url,
+          title: "",
+          price: 0,
+          currency: "JPY",
+          platform: "カスタムURL",
+          error: e?.message || "取得失敗",
+          priceInJpy: 0,
+        });
         continue;
       }
-      const data = await res.json() as UrlResult;
       const jpy = data.currency === "USD" ? Math.round(data.price * exchangeRate) : data.price;
       out.push({ ...data, url, priceInJpy: jpy || 0 });
     }

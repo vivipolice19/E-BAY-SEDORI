@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiResponse } from "@/lib/queryClient";
 import type { AppSettings } from "@shared/schema";
 import {
   Search, ExternalLink, Loader2, TrendingUp, Store,
@@ -401,8 +401,7 @@ export default function PriceResearch() {
           body: JSON.stringify({ url }),
           signal: ac.signal,
         });
-        if (!res.ok) { const e = await res.json(); throw new Error(e.error || "取得失敗"); }
-        return res.json() as Promise<SourceUrlResult>;
+        return parseApiResponse<SourceUrlResult>(res);
       } catch (e: any) {
         if (e?.name === "AbortError") {
           throw new Error(
@@ -659,6 +658,9 @@ export default function PriceResearch() {
               </Button>
             </div>
             <p className="text-[10px] text-muted-foreground -mt-1">商品URL・検索URL・LH_Sold=1付き落札URLに対応</p>
+            <p className="text-[10px] text-muted-foreground -mt-1.5 leading-snug">
+              ここで取得するのは<strong className="text-foreground/85 font-medium">eBay側の売値・画像・重量（Item Specifics）など</strong>です。仕入れサイトの価格は右の「A. 仕入れページURL」で別途取得します。
+            </p>
 
             {ebayResult && (
               <div className={`rounded-lg p-3 border text-xs space-y-2 ${ebayResult.error ? "border-destructive/40 bg-destructive/5" : "border-blue-200 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-950/30"}`}>
@@ -1009,7 +1011,7 @@ export default function PriceResearch() {
             {/* ---- A. URL専用取得 ---- */}
             <div className="rounded-md border border-orange-300/80 dark:border-orange-700/60 p-2.5 bg-orange-50/30 dark:bg-orange-950/20">
               <div className="text-[11px] font-semibold text-orange-800 dark:text-orange-200 mb-2">
-                A. URL専用（価格・画像・説明を自動取得）
+                A. 仕入れページURL（このURL先から価格・画像・説明を取得）
               </div>
               <>
                 <div className="flex gap-1.5">
@@ -1030,7 +1032,7 @@ export default function PriceResearch() {
                   </Button>
                 </div>
                 <p className="text-[10px] text-muted-foreground -mt-1">
-                  楽天・Amazon・メルカリ（個人出品 / Shops 商品URL）・ヤフオク・Yahoo!ショッピング等に対応
+                  楽天・Amazon・メルカリ・ヤフオク・Yahoo!ショッピング（店舗URL含む）等。左の「eBay 売値リサーチ」で取った<strong className="text-foreground/90">出品用タイトル・カテゴリ・コンディション・重量</strong>とは別で、ここは<strong className="text-foreground/90">仕入れ元ページ</strong>の情報です。
                 </p>
 
                 {sourceMutation.isPending && (
@@ -1080,11 +1082,11 @@ export default function PriceResearch() {
                             )}
                           </div>
                         </div>
-                        {/* Condition and description from Mercari/Yahoo */}
+                        {/* Condition and description from sourcing page (not eBay listing) */}
                         {sourceResult.sourceCondition && (
                           <div className="p-2 rounded-md bg-orange-100 dark:bg-orange-900/40 border border-orange-200 dark:border-orange-800 space-y-1">
                             <div className="flex items-center gap-2">
-                              <span className="text-[10px] font-semibold text-orange-700 dark:text-orange-300">商品状態:</span>
+                              <span className="text-[10px] font-semibold text-orange-700 dark:text-orange-300">仕入れ先の状態:</span>
                               <span className="text-[11px] font-medium">{sourceResult.sourceCondition}</span>
                               {sourceResult.ebayConditionMapped && (
                                 <span className="text-[10px] bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded font-medium">
@@ -1094,7 +1096,7 @@ export default function PriceResearch() {
                             </div>
                             {sourceResult.sourceDescription && (
                               <div>
-                                <p className="text-[10px] text-orange-600 dark:text-orange-400 mb-0.5">説明文（抜粋）:</p>
+                                <p className="text-[10px] text-orange-600 dark:text-orange-400 mb-0.5">仕入れページの説明（抜粋）:</p>
                                 <p className="text-[10px] text-foreground line-clamp-3 leading-relaxed">{sourceResult.sourceDescription.slice(0, 200)}</p>
                               </div>
                             )}
