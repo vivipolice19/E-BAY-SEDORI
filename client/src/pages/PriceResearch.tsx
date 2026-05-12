@@ -98,6 +98,13 @@ interface EbayUrlResult {
   imageUrl?: string;
   weightG?: number;
   mpn?: string; // MPN / Model Number from Item Specifics
+  listingTitle?: string;
+  ebayCondition?: string;
+  ebayCategoryId?: string;
+  ebayCategoryPath?: string;
+  listingDescription?: string;
+  listingItemSpecifics?: string;
+  ebayImageUrls?: string[];
   // Market comp data (for item URL)
   marketCount?: number;
   marketAvgJpy?: number;
@@ -484,6 +491,24 @@ export default function PriceResearch() {
         sourceCondition: selectedSourceCondition || undefined,
         sourceDescription: selectedSourceDescription || undefined,
         ebayConditionMapped: selectedEbayConditionMapped || undefined,
+        // eBay 商品URLから取得（出品・シート X〜AD）
+        ...(ebayResult?.type === "item" && ebayResult.itemId
+          ? {
+              listingTitle: ebayResult.listingTitle || ebayResult.title || undefined,
+              listingDescription: ebayResult.listingDescription || undefined,
+              ebayCondition: ebayResult.ebayCondition || undefined,
+              ebayCategoryId: ebayResult.ebayCategoryId || undefined,
+              ebayCategoryPath: ebayResult.ebayCategoryPath || undefined,
+              listingItemSpecifics: ebayResult.listingItemSpecifics || undefined,
+              ebayImageUrls:
+                ebayResult.ebayImageUrls && ebayResult.ebayImageUrls.length > 0
+                  ? ebayResult.ebayImageUrls
+                  : ebayResult.imageUrl
+                    ? [ebayResult.imageUrl]
+                    : undefined,
+              ebayImageUrl: ebayResult.imageUrl || ebayResult.ebayImageUrls?.[0] || undefined,
+            }
+          : {}),
       });
     },
     onSuccess: () => {
@@ -687,6 +712,17 @@ export default function PriceResearch() {
                         <p className="text-lg font-bold text-blue-700 dark:text-blue-300">¥{ebayResult.priceJpy.toLocaleString()}</p>
                         {ebayResult.weightG && (
                           <p className="text-[10px] text-green-600 font-medium">重量: {ebayResult.weightG}g（eBay取得）</p>
+                        )}
+                        {(ebayResult.ebayCondition || ebayResult.ebayCategoryId || ebayResult.ebayCategoryPath || ebayResult.listingDescription) && (
+                          <div className="mt-1.5 pt-1.5 border-t border-blue-200/60 dark:border-blue-800/50 space-y-0.5 text-[10px] text-muted-foreground">
+                            <p className="font-semibold text-blue-800/90 dark:text-blue-200/90">出品用（保存リストへ引き継ぎ）</p>
+                            {ebayResult.ebayCondition && <p>コンディション: <span className="text-foreground">{ebayResult.ebayCondition}</span></p>}
+                            {ebayResult.ebayCategoryId && <p>カテゴリID: <span className="text-foreground font-mono">{ebayResult.ebayCategoryId}</span></p>}
+                            {ebayResult.ebayCategoryPath && <p className="line-clamp-2">カテゴリ: {ebayResult.ebayCategoryPath}</p>}
+                            {ebayResult.listingDescription && (
+                              <p className="line-clamp-2">説明: {ebayResult.listingDescription.slice(0, 120)}{ebayResult.listingDescription.length > 120 ? "…" : ""}</p>
+                            )}
+                          </div>
                         )}
                         <a href={ebayResult.itemUrl} target="_blank" rel="noreferrer"
                           className="text-[10px] text-blue-600 hover:underline flex items-center gap-0.5">

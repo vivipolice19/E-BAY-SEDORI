@@ -606,6 +606,14 @@ export interface EbayUrlResult {
   imageUrl?: string;
   weightG?: number; // extracted from Item Specifics (grams)
   mpn?: string; // MPN / Model Number from Item Specifics
+  /** Browse API + HTML フォールバック由来（出品・シート X〜AD 用） */
+  listingTitle?: string;
+  ebayCondition?: string;
+  ebayCategoryId?: string;
+  ebayCategoryPath?: string;
+  listingDescription?: string;
+  listingItemSpecifics?: string; // JSON string of itemSpecifics map
+  ebayImageUrls?: string[];
   // Market data (sold comps) for item URL
   marketCount?: number;
   marketAvgJpy?: number;
@@ -812,6 +820,43 @@ export async function fetchEbayUrlData(ebayUrl: string, exchangeRate = 150): Pro
     const daysToSellList = sold.map(i => i.daysToSell).filter((d): d is number => d !== undefined);
     const marketAvgDaysToSell = daysToSellList.length ? Math.round(daysToSellList.reduce((a, b) => a + b, 0) / daysToSellList.length) : undefined;
 
+    let listingTitle: string | undefined;
+    let ebayCondition: string | undefined;
+    let ebayCategoryId: string | undefined;
+    let ebayCategoryPath: string | undefined;
+    let listingDescription: string | undefined;
+    let listingItemSpecifics: string | undefined;
+    let ebayImageUrls: string[] | undefined;
+
+    if (detail.status === "fulfilled" && detail.value) {
+      const d = detail.value;
+      listingTitle = d.title || item.title;
+      if (d.condition) {
+        ebayCondition = typeof d.condition === "string" ? d.condition : String(d.condition);
+      }
+      ebayCategoryId = d.categoryId;
+      ebayCategoryPath = d.categoryPath;
+      if (d.description) {
+        const plain = stripHtmlTags(String(d.description)).trim();
+        listingDescription = plain.length > 12_000 ? plain.slice(0, 12_000) : plain;
+      }
+      if (d.itemSpecifics && Object.keys(d.itemSpecifics).length > 0) {
+        try {
+          listingItemSpecifics = JSON.stringify(d.itemSpecifics);
+        } catch {
+          /* ignore */
+        }
+      }
+      const imgs: string[] = [];
+      if (d.imageUrl) imgs.push(d.imageUrl);
+      if (Array.isArray(d.additionalImages)) {
+        for (const u of d.additionalImages) {
+          if (typeof u === "string" && u.startsWith("http") && !imgs.includes(u)) imgs.push(u);
+        }
+      }
+      if (imgs.length > 0) ebayImageUrls = imgs;
+    }
+
     return {
       type: "item",
       itemId,
@@ -824,6 +869,13 @@ export async function fetchEbayUrlData(ebayUrl: string, exchangeRate = 150): Pro
       imageUrl: item.imageUrl,
       weightG,
       mpn,
+      listingTitle,
+      ebayCondition,
+      ebayCategoryId,
+      ebayCategoryPath,
+      listingDescription,
+      listingItemSpecifics,
+      ebayImageUrls,
       marketCount: soldPrices.length,
       marketAvgJpy,
       marketMinJpy,
