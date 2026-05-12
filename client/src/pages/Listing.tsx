@@ -28,13 +28,18 @@ function stripHtmlToPlain(html: string): string {
 // ---- Utility: Weight parsing ----
 function parseWeightToGrams(value: string): number | null {
   const v = value.toLowerCase().trim();
-  const num = parseFloat(v);
+  const numMatch = v.match(/[\d.]+/);
+  if (!numMatch) return null;
+  const num = parseFloat(numMatch[0]);
   if (isNaN(num)) return null;
   if (v.includes("kg")) return Math.round(num * 1000);
   if (v.includes("lb")) return Math.round(num * 453.592);
   if (v.includes("oz")) return Math.round(num * 28.3495);
-  if (v.includes("g")) return Math.round(num);
-  return num >= 100 ? Math.round(num) : Math.round(num * 1000);
+  if (v.includes("mg") || v.includes("ミリグラム")) return Math.max(1, Math.round(num / 1000));
+  if (v.includes("gram") || v.includes("グラム") || (v.includes("g") && !v.includes("kg"))) return Math.round(num);
+  // 単位なしはグラムとして扱う（旧ロジック num*1000 は "30" → 30000g の誤爆のため廃止）
+  if (num > 0 && num <= 80_000) return Math.round(num);
+  return null;
 }
 
 function extractWeightFromSpecifics(specifics: Record<string, string>): { key: string; rawValue: string; grams: number } | null {

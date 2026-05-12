@@ -689,6 +689,68 @@ export async function getEbayItemImages(itemId: string): Promise<string[]> {
   }
 }
 
+/** Item Specifics の重量表記をグラムに正規化（「30g」が kg 扱いで 30000 になる誤りを防ぐ） */
+function parseEbayWeightSpecificToGrams(raw: string): number | undefined {
+  const val = raw.trim();
+  if (!val || /^does not apply$/i.test(val) || val === "N/A") return undefined;
+
+  const lower = val.toLowerCase().replace(/,/g, "");
+  const numTok = val.replace(/,/g, "").match(/[\d.]+/);
+  if (!numTok) return undefined;
+  const n = parseFloat(numTok[0]);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+
+  if (/\bkg\b|キログラム|キロ\b/.test(val) || lower.includes("kilogram")) return Math.round(n * 1000);
+  if (/\blb\b|lbs|\bpounds?\b/.test(lower)) return Math.round(n * 453.592);
+  if (/\boz\b|\bounces?\b/.test(lower)) return Math.round(n * 28.3495);
+  if (/\bmg\b|ミリグラム/.test(lower)) return Math.max(1, Math.round(n / 1000));
+  if (lower.includes("gram") || lower.includes("グラム")) return Math.round(n);
+  if (lower.includes("g") && !lower.includes("kg")) return Math.round(n);
+
+  // 単位なし: eBay の Item Specifics は数値のみでもグラムが多い（×1000 は誤爆のため使わない）
+  if (n <= 80_000) return Math.round(n);
+  return Math.round(n);
+}
+
+function extractWeightGramsFromItemSpecifics(specifics: Record<string, string>): number | undefined {
+  const keyNeedles = [
+    "item weight",
+    "product weight",
+    "net weight",
+    "gross weight",
+    "unit weight",
+    "package weight",
+    "weight",
+    "商品の重量",
+    "重量",
+  ];
+  const skipKey = /width|height|length|depth|dimension|screen size|画面サイズ|長さ|幅|高さ|奥行/i;
+
+  const entries = Object.entries(specifics);
+  const score = (key: string) => {
+    const kl = key.toLowerCase();
+    let s = 0;
+    if (/item weight|商品の重量|product weight/i.test(key)) s += 20;
+    else if (/net weight|unit weight/i.test(kl)) s += 15;
+    else if (/gross weight|package weight/i.test(kl)) s += 10;
+    else if (keyNeedles.some((n) => kl.includes(n))) s += 5;
+    return s;
+  };
+
+  const candidates: { key: string; val: string; grams: number; sc: number }[] = [];
+  for (const [key, val] of entries) {
+    if (!val?.trim() || skipKey.test(key)) continue;
+    const kl = key.toLowerCase();
+    if (!keyNeedles.some((needle) => kl.includes(needle))) continue;
+    const grams = parseEbayWeightSpecificToGrams(val);
+    if (grams !== undefined && grams > 0 && grams < 500_000) {
+      candidates.push({ key, val, grams, sc: score(key) });
+    }
+  }
+  candidates.sort((a, b) => b.sc - a.sc);
+  return candidates[0]?.grams;
+}
+
 export async function fetchEbayUrlData(ebayUrl: string, exchangeRate = 150): Promise<EbayUrlResult> {
   let parsedUrl: URL;
   try { parsedUrl = new URL(ebayUrl); } catch { throw new Error("URLの形式が正しくありません"); }
@@ -723,23 +785,9 @@ export async function fetchEbayUrlData(ebayUrl: string, exchangeRate = 150): Pro
       ),
     ]);
 
-    // Extract weight from Item Specifics
+    // Extract weight from Item Specifics（キーは API の言語で変わるため部分一致で集約）
     const specifics = detail.status === "fulfilled" && detail.value ? detail.value.itemSpecifics : {};
-    const weightKeys = ["Item Weight", "Weight", "Net Weight", "Gross Weight", "Total Weight", "Unit Weight"];
-    let weightG: number | undefined;
-    for (const key of weightKeys) {
-      const val = specifics[key];
-      if (val) {
-        const n = parseFloat(val.toLowerCase().replace(/[^0-9.]/g, ""));
-        if (!isNaN(n)) {
-          if (val.toLowerCase().includes("kg")) weightG = Math.round(n * 1000);
-          else if (val.toLowerCase().includes("lb")) weightG = Math.round(n * 453.592);
-          else if (val.toLowerCase().includes("oz")) weightG = Math.round(n * 28.3495);
-          else weightG = Math.round(n > 50 ? n : n * 1000); // assume kg if < 50
-          break;
-        }
-      }
-    }
+    const weightG = extractWeightGramsFromItemSpecifics(specifics);
 
     // Extract MPN / Model Number from Item Specifics
     const mpnKeys = ["MPN", "Model", "Model Number", "Part Number", "Manufacturer Part Number", "モデル", "型番"];
@@ -950,7 +998,9 @@ function stripHtmlTags(input: string): string {
 }
 
 function extractJsonLdFromHtml(html: string): any | null {
-  const blocks = [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  const blocks = Array.from(
+    html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi),
+  );
   for (const m of blocks) {
     const raw = m[1]?.trim();
     if (!raw) continue;
@@ -969,14 +1019,34 @@ function extractJsonLdFromHtml(html: string): any | null {
   return null;
 }
 
+/** JSON-LD の weight を Item Specifics 用の文字列に */
+function formatJsonLdWeight(w: unknown): string | undefined {
+  if (typeof w === "string" && w.trim()) return w.trim();
+  if (!w || typeof w !== "object") return undefined;
+  const o = w as Record<string, unknown>;
+  const val = o.value ?? o.weightValue;
+  if (val == null || val === "") return undefined;
+  const u = String(o.unitCode || o.unitText || "").toUpperCase();
+  const vStr = String(val).replace(/,/g, "").trim();
+  if (!vStr) return undefined;
+  if (u.includes("KGM") || u === "KG") return `${vStr} kg`;
+  if (u.includes("GRM") || u === "G") return `${vStr} g`;
+  if (u.includes("LBR") || u.includes("LB")) return `${vStr} lb`;
+  if (u.includes("ONT") || u === "OZ") return `${vStr} oz`;
+  if (u) return `${vStr} ${u}`;
+  return vStr;
+}
+
 async function enrichItemDetailFallback(detail: EbayItemDetail, rawData: any): Promise<EbayItemDetail> {
-  // If key fields already exist, keep current result.
-  const alreadyGood =
-    !!detail.condition &&
-    !!detail.categoryId &&
-    !!detail.categoryPath &&
-    !!detail.description;
-  if (alreadyGood) return detail;
+  const weightMissing = extractWeightGramsFromItemSpecifics(detail.itemSpecifics) === undefined;
+  const needHtml =
+    !detail.condition ||
+    !detail.categoryId ||
+    !detail.categoryPath ||
+    !(detail.description && String(detail.description).length > 40) ||
+    weightMissing;
+
+  if (!needHtml) return detail;
 
   const itemUrl = detail.itemUrl || rawData?.itemWebUrl;
   if (!itemUrl) return detail;
@@ -1016,12 +1086,26 @@ async function enrichItemDetailFallback(detail: EbayItemDetail, rawData: any): P
       (typeof jsonLd?.description === "string" ? stripHtmlTags(jsonLd.description) : undefined) ||
       stripHtmlTags(html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i)?.[1] || "");
 
+    const mergedSpecifics: Record<string, string> = { ...detail.itemSpecifics };
+
+    const ldWeight = formatJsonLdWeight(jsonLd?.weight);
+    if (ldWeight && extractWeightGramsFromItemSpecifics(mergedSpecifics) === undefined) {
+      mergedSpecifics["Product Weight"] = ldWeight;
+    }
+    if (extractWeightGramsFromItemSpecifics(mergedSpecifics) === undefined) {
+      const wm = html.match(
+        /(?:Product Weight|商品の重量|Item Weight)[^<\d]{0,80}?([\d.,]+\s*(?:kg|g|グラム|grams?|oz|lb)\b)/i,
+      );
+      if (wm?.[1]) mergedSpecifics["Product Weight"] = wm[1].replace(/\s+/g, " ").trim();
+    }
+
     return {
       ...detail,
       condition: fallbackCondition,
       categoryId: fallbackCategoryId,
       categoryPath: fallbackCategoryPath,
       description: fallbackDescription || detail.description,
+      itemSpecifics: mergedSpecifics,
     };
   } catch {
     return detail;
