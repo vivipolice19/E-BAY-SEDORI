@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import path from "path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import type {
   SavedProduct,
   InsertSavedProduct,
@@ -468,22 +468,31 @@ export class FilePersistedStorage extends MemStorage {
     if (process.env.PERSIST_STATE === "0" || process.env.PERSIST_STATE === "false") return;
     try {
       const fp = getStateFilePath();
-      mkdirSync(path.dirname(fp), { recursive: true });
+      const dir = path.dirname(fp);
+      mkdirSync(dir, { recursive: true });
       const products = this.getAllProductsSnapshot();
-      writeFileSync(
-        fp,
-        JSON.stringify(
-          {
-            version: FILE_PERSIST_VERSION,
-            savedAt: new Date().toISOString(),
-            settings: this.settings,
-            products,
-          },
-          null,
-          0,
-        ),
-        "utf-8",
+      const payload = JSON.stringify(
+        {
+          version: FILE_PERSIST_VERSION,
+          savedAt: new Date().toISOString(),
+          settings: this.settings,
+          products,
+        },
+        null,
+        0,
       );
+      const tmp = path.join(dir, `.sedori-state-${process.pid}-${Date.now()}.tmp`);
+      writeFileSync(tmp, payload, "utf-8");
+      try {
+        renameSync(tmp, fp);
+      } catch {
+        writeFileSync(fp, payload, "utf-8");
+        try {
+          unlinkSync(tmp);
+        } catch {
+          /* ignore */
+        }
+      }
     } catch (e) {
       console.error("[file-persist] Failed to write state file:", e);
     }
@@ -547,19 +556,37 @@ export class FilePersistedStorage extends MemStorage {
  */
 export class DbBackedStorage extends MemStorage {
   private productsHydrated = false;
+  private productsHydrateInFlight: Promise<void> | null = null;
+
+  /** 設定は DB から毎回読み直さない（保存失敗後の古い行でメモリを上書きして ID が消えるのを防ぐ） */
+  private settingsHydrated = false;
+  private settingsLoadInFlight: Promise<void> | null = null;
 
   private async ensureProductsHydrated(): Promise<void> {
     if (!process.env.DATABASE_URL?.trim() || this.productsHydrated) return;
-    try {
-      const rows = await loadAllSavedProductsFromDb();
-      this.replaceProductsFromPersisted(rows);
-    } catch (e) {
-      console.error(
-        "[products] Failed to load from database (Render で Postgres を使う場合は `npm run db:push` で saved_products を作成):",
-        e,
-      );
+    if (!this.productsHydrateInFlight) {
+      this.productsHydrateInFlight = (async () => {
+        try {
+          const rows = await loadAllSavedProductsFromDb();
+          if (rows.length === 0 && this.products.size > 0) {
+            console.warn(
+              "[products] DB が 0 件を返しましたがメモリに商品があります。一覧を空にしないでスキップします（一時的な DB 不調の可能性）。",
+            );
+          } else {
+            this.replaceProductsFromPersisted(rows);
+          }
+        } catch (e) {
+          console.error(
+            "[products] Failed to load from database (Render で Postgres を使う場合は `npm run db:push` で saved_products を作成):",
+            e,
+          );
+        } finally {
+          this.productsHydrated = true;
+          this.productsHydrateInFlight = null;
+        }
+      })();
     }
-    this.productsHydrated = true;
+    await this.productsHydrateInFlight;
   }
 
   async getSavedProducts(): Promise<SavedProduct[]> {
@@ -611,14 +638,50 @@ export class DbBackedStorage extends MemStorage {
     return ok;
   }
 
+  private async ensureSettingsLoadedOnce(): Promise<void> {
+    if (!process.env.DATABASE_URL?.trim() || this.settingsHydrated) return;
+    if (!this.settingsLoadInFlight) {
+      this.settingsLoadInFlight = (async () => {
+        const envSid =
+          process.env.SPREADSHEET_ID?.trim() ||
+          process.env.GOOGLE_SPREADSHEET_ID?.trim();
+        try {
+          const row = await loadPersistedSettings();
+          if (row) {
+            this.settings = {
+              ...this.settings,
+              ...row,
+              spreadsheetId:
+                String(row.spreadsheetId || "").trim() ||
+                String(this.settings.spreadsheetId || "").trim() ||
+                envSid ||
+                null,
+              ebayAppId:
+                String(row.ebayAppId || "").trim() ||
+                String(this.settings.ebayAppId || "").trim() ||
+                process.env.EBAY_APP_ID ||
+                null,
+              ebayCertId:
+                String(row.ebayCertId || "").trim() ||
+                String(this.settings.ebayCertId || "").trim() ||
+                process.env.EBAY_CERT_ID ||
+                null,
+            } as AppSettings;
+          }
+        } catch (e) {
+          console.error("[settings] Failed to load from database:", e);
+        } finally {
+          this.settingsHydrated = true;
+          this.settingsLoadInFlight = null;
+        }
+      })();
+    }
+    await this.settingsLoadInFlight;
+  }
+
   async getSettings(): Promise<AppSettings> {
     if (!process.env.DATABASE_URL?.trim()) return super.getSettings();
-    try {
-      const row = await loadPersistedSettings();
-      if (row) this.settings = row;
-    } catch (e) {
-      console.error("[settings] Failed to load from database:", e);
-    }
+    await this.ensureSettingsLoadedOnce();
     const envSid =
       process.env.SPREADSHEET_ID?.trim() ||
       process.env.GOOGLE_SPREADSHEET_ID?.trim();

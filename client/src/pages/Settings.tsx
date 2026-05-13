@@ -55,7 +55,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (settings) {
-      setSpreadsheetId(settings.spreadsheetId || "");
+      setSpreadsheetId((prev) => {
+        const sid = settings.spreadsheetId?.trim() ?? "";
+        if (sid) return sid;
+        return prev || "";
+      });
       setSheetName(settings.sheetName || "セドリリスト");
       setInventorySheetName(settings.inventorySheetName || "Mercari-eBay 在庫管理");
       setExchangeRate(String(settings.exchangeRate || 150));

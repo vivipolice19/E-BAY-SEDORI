@@ -1300,6 +1300,14 @@ export default function EbaySearch() {
         if (s.tab) setTab(s.tab);
         if (s.soldWindowDays) setSoldWindowDays(s.soldWindowDays);
         if (typeof s.smartBoost === "boolean") setSmartBoost(s.smartBoost);
+        if (typeof s.soldOnly === "boolean") setSoldOnly(s.soldOnly);
+        if (typeof s.searchOffset === "number" && s.searchOffset >= 0) setSearchOffset(s.searchOffset);
+        if (typeof s.popularOffset === "number" && s.popularOffset >= 0) setPopularOffset(s.popularOffset);
+        if (s.selectedCategory?.id) {
+          const found = POPULAR_CATEGORIES.find((c) => c.id === s.selectedCategory.id);
+          if (found) setSelectedCategory(found);
+          else setSelectedCategory({ id: s.selectedCategory.id, name: s.selectedCategory.name || s.selectedCategory.id });
+        }
       }
     } catch {}
   }, []);
@@ -1309,16 +1317,23 @@ export default function EbaySearch() {
     try {
       localStorage.setItem("ebaySearchState", JSON.stringify({
         keyword, searchQuery, sortOrder, condition, minPrice, maxPrice, daysListed, categoryId, activeCategoryName, tab,
-        soldWindowDays, smartBoost,
+        soldWindowDays, smartBoost, soldOnly, searchOffset, popularOffset,
+        selectedCategory: { id: selectedCategory.id, name: selectedCategory.name },
       }));
     } catch {}
-  }, [keyword, searchQuery, sortOrder, condition, minPrice, maxPrice, daysListed, categoryId, activeCategoryName, tab, soldWindowDays, smartBoost]);
+  }, [
+    keyword, searchQuery, sortOrder, condition, minPrice, maxPrice, daysListed, categoryId, activeCategoryName, tab,
+    soldWindowDays, smartBoost, soldOnly, searchOffset, popularOffset, selectedCategory,
+  ]);
 
   const handleClearSearch = () => {
     setKeyword(""); setSearchQuery(""); setSortOrder("BestMatch"); setCondition("all");
     setMinPrice(""); setMaxPrice(""); setDaysListed("0"); setCategoryId("");
     setActiveCategoryName("すべてのカテゴリ"); setResearchingItemId(null); setSearchOffset(0);
     setSoldWindowDays("90");
+    setSoldOnly(false);
+    setPopularOffset(0);
+    setSelectedCategory(POPULAR_CATEGORIES[0]);
     setSmartBoost(true);
     queryClient.removeQueries({ queryKey: ["/api/ebay/search"] });
     queryClient.removeQueries({ queryKey: ["/api/ebay/sold"] });
