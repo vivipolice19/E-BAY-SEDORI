@@ -49,7 +49,10 @@ export default function Watchlist() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: (id: string) => apiRequest("POST", `/api/sheets/sync/${id}`),
+    mutationFn: async (id: string) => {
+      await queryClient.fetchQuery({ queryKey: ["/api/products"] });
+      return apiRequest("POST", `/api/sheets/sync/${encodeURIComponent(id)}`);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       toast({ title: "同期完了", description: "スプレッドシートに追加しました" });
@@ -106,12 +109,15 @@ export default function Watchlist() {
             size="sm"
             className="gap-2 flex-shrink-0"
             onClick={() => {
-              apiRequest("POST", "/api/sheets/sync-all")
+              queryClient
+                .fetchQuery({ queryKey: ["/api/products"] })
+                .then(() => apiRequest("POST", "/api/sheets/sync-all"))
                 .then((res) => res.json())
                 .then(() => {
                   queryClient.invalidateQueries({ queryKey: ["/api/products"] });
                   toast({ title: "全件同期完了", description: `${unsyncedCount}件をSpreadSheetに追加しました` });
-                }).catch((e) => {
+                })
+                .catch((e) => {
                   toast({ title: "同期エラー", description: e.message, variant: "destructive" });
                 });
             }}

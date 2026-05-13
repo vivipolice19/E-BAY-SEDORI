@@ -41,6 +41,7 @@ export default function SheetsSync() {
   const handleSyncAll = async () => {
     setIsSyncingAll(true);
     try {
+      await queryClient.fetchQuery({ queryKey: ["/api/products"] });
       const res = await apiRequest("POST", "/api/sheets/sync-all");
       const result = await res.json();
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });

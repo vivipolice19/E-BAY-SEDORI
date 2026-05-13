@@ -11,7 +11,12 @@ import type {
   InventorySyncLog,
 } from "@shared/schema";
 import { loadPersistedSettings, savePersistedSettings } from "./settingsDb";
-import { loadAllSavedProductsFromDb, replaceSavedProductRow, deleteSavedProductRow } from "./productsDb";
+import {
+  loadAllSavedProductsFromDb,
+  loadSavedProductFromDb,
+  replaceSavedProductRow,
+  deleteSavedProductRow,
+} from "./productsDb";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -222,7 +227,7 @@ Questions welcome!`,
 
 export class MemStorage implements IStorage {
   private users: Map<string, User> = new Map();
-  private products: Map<string, SavedProduct> = new Map();
+  protected products: Map<string, SavedProduct> = new Map();
   private templates: Map<string, ListingTemplate> = new Map();
   private inventorySyncLogs: Map<string, InventorySyncLog> = new Map();
   protected settings: AppSettings = {
@@ -344,6 +349,11 @@ export class MemStorage implements IStorage {
   /** ファイル永続化用（子クラスからスナップショット取得） */
   protected getAllProductsSnapshot(): SavedProduct[] {
     return Array.from(this.products.values());
+  }
+
+  /** Postgres 同期時: DB にまだ無いがメモリにだけある行を残す */
+  protected upsertProductInMemory(p: SavedProduct): void {
+    this.products.set(p.id, p);
   }
 
   async getSettings(): Promise<AppSettings> {
@@ -555,52 +565,72 @@ export class FilePersistedStorage extends MemStorage {
  * Render の再起動・水平スケールでも設定（eBay App ID 等）が共有される。
  */
 export class DbBackedStorage extends MemStorage {
-  private productsHydrated = false;
-  private productsHydrateInFlight: Promise<void> | null = null;
+  /**
+   * 複数インスタンス・LB 配下でも DB を正とする。一覧・同期のたびにマージ（メモリのみの行は DB 未反映分として維持）。
+   */
+  private productsDbSyncInFlight: Promise<void> | null = null;
 
   /** 設定は DB から毎回読み直さない（保存失敗後の古い行でメモリを上書きして ID が消えるのを防ぐ） */
   private settingsHydrated = false;
   private settingsLoadInFlight: Promise<void> | null = null;
 
-  private async ensureProductsHydrated(): Promise<void> {
-    if (!process.env.DATABASE_URL?.trim() || this.productsHydrated) return;
-    if (!this.productsHydrateInFlight) {
-      this.productsHydrateInFlight = (async () => {
+  private async syncProductsWithDatabase(): Promise<void> {
+    if (!process.env.DATABASE_URL?.trim()) return;
+    if (!this.productsDbSyncInFlight) {
+      this.productsDbSyncInFlight = (async () => {
+        const memoryBefore = this.getAllProductsSnapshot();
         try {
           const rows = await loadAllSavedProductsFromDb();
-          if (rows.length === 0 && this.products.size > 0) {
+          if (rows.length === 0 && memoryBefore.length > 0) {
             console.warn(
-              "[products] DB が 0 件を返しましたがメモリに商品があります。一覧を空にしないでスキップします（一時的な DB 不調の可能性）。",
+              "[products] DB が 0 件を返しましたがメモリに商品があります。一覧を空にしません（一時的な DB 不調の可能性）。",
             );
-          } else {
-            this.replaceProductsFromPersisted(rows);
+            return;
+          }
+          const rowIds = new Set(rows.map((r) => r.id));
+          this.replaceProductsFromPersisted(rows);
+          for (const p of memoryBefore) {
+            if (!rowIds.has(p.id)) {
+              this.upsertProductInMemory(p);
+            }
           }
         } catch (e) {
           console.error(
-            "[products] Failed to load from database (Render で Postgres を使う場合は `npm run db:push` で saved_products を作成):",
+            "[products] DB 同期に失敗しました（Render で Postgres を使う場合は `npm run db:push` で saved_products を作成）:",
             e,
           );
         } finally {
-          this.productsHydrated = true;
-          this.productsHydrateInFlight = null;
+          this.productsDbSyncInFlight = null;
         }
       })();
     }
-    await this.productsHydrateInFlight;
+    await this.productsDbSyncInFlight;
   }
 
   async getSavedProducts(): Promise<SavedProduct[]> {
-    await this.ensureProductsHydrated();
+    await this.syncProductsWithDatabase();
     return super.getSavedProducts();
   }
 
   async getSavedProduct(id: string): Promise<SavedProduct | undefined> {
-    await this.ensureProductsHydrated();
-    return super.getSavedProduct(id);
+    await this.syncProductsWithDatabase();
+    const mem = await super.getSavedProduct(id);
+    if (mem) return mem;
+    if (!process.env.DATABASE_URL?.trim()) return undefined;
+    try {
+      const row = await loadSavedProductFromDb(id);
+      if (row) {
+        this.upsertProductInMemory(row);
+        return row;
+      }
+    } catch (e) {
+      console.error("[products] 単品の DB 読込に失敗:", e);
+    }
+    return undefined;
   }
 
   async createSavedProduct(product: InsertSavedProduct): Promise<SavedProduct> {
-    await this.ensureProductsHydrated();
+    await this.syncProductsWithDatabase();
     const created = await super.createSavedProduct(product);
     if (process.env.DATABASE_URL?.trim()) {
       try {
@@ -613,7 +643,7 @@ export class DbBackedStorage extends MemStorage {
   }
 
   async updateSavedProduct(id: string, product: Partial<InsertSavedProduct>): Promise<SavedProduct | undefined> {
-    await this.ensureProductsHydrated();
+    await this.syncProductsWithDatabase();
     const updated = await super.updateSavedProduct(id, product);
     if (updated && process.env.DATABASE_URL?.trim()) {
       try {
@@ -626,7 +656,7 @@ export class DbBackedStorage extends MemStorage {
   }
 
   async deleteSavedProduct(id: string): Promise<boolean> {
-    await this.ensureProductsHydrated();
+    await this.syncProductsWithDatabase();
     const ok = await super.deleteSavedProduct(id);
     if (ok && process.env.DATABASE_URL?.trim()) {
       try {

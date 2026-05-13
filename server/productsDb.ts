@@ -18,6 +18,13 @@ export async function loadAllSavedProductsFromDb(): Promise<SavedProduct[]> {
   return database.select().from(savedProducts).orderBy(desc(savedProducts.createdAt));
 }
 
+export async function loadSavedProductFromDb(id: string): Promise<SavedProduct | null> {
+  const database = getPersistDb();
+  if (!database) return null;
+  const rows = await database.select().from(savedProducts).where(eq(savedProducts.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
 export async function replaceSavedProductRow(row: SavedProduct): Promise<void> {
   const database = getPersistDb();
   if (!database) return;
