@@ -163,6 +163,7 @@ export default function SettingsPage() {
               環境変数 <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_APP_ID</code> / <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_CERT_ID</code> をホストに設定している場合は、そちらが<strong>優先</strong>されます（空白だけの場合は設定画面の値を使います）。
               出品用: <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_USER_TOKEN</code> / <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">EBAY_DEV_ID</code> も同様です。
               Render 等では <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">DATABASE_URL</code>（PostgreSQL）を付けると「保存」した設定が再起動後も残ります。
+              <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">DATABASE_URL</code> が無いときはサーバーの作業ディレクトリに <code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">.data/sedori-state.json</code> を自動作成します（<code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">PERSIST_DATA_DIR</code> で保存先変更、<code className="bg-blue-100 dark:bg-blue-900 px-1 rounded">PERSIST_STATE=0</code> で無効）。Render の再デプロイでファイルが消える場合があるため、本番の共有運用では Postgres を推奨します。
             </p>
           </div>
           <div className="space-y-1.5">
@@ -399,6 +400,11 @@ export default function SettingsPage() {
               <code className="bg-muted px-1 rounded">GOOGLE_SERVICE_ACCOUNT_JSON</code> に<strong>1行</strong>で設定し、
               スプレッドシートをその <code className="bg-muted px-1 rounded">client_email</code> に編集者で共有してください（Sheets API 有効化が必要）。
               Replit は従来どおりコネクタでも可。
+              <br />
+              <strong className="text-amber-800 dark:text-amber-200">永続化:</strong> 本番では Render に{" "}
+              <code className="bg-muted px-1 rounded">DATABASE_URL</code>（Postgres）を追加し、デプロイ後に{" "}
+              <code className="bg-muted px-1 rounded">npm run db:push</code> でテーブルを作成するのが確実です。
+              <code className="bg-muted px-1 rounded">DATABASE_URL</code> が無いときは設定・保存リストを <code className="bg-muted px-1 rounded">.data/sedori-state.json</code> に自動保存します（ローカルや自宅サーバー向け。Render 無料枠の再デプロイでは消えることがあります）。
             </p>
           </div>
 

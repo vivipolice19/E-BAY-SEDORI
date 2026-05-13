@@ -1396,7 +1396,7 @@ export default function EbaySearch() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (keyword.trim()) { setSearchQuery(keyword.trim()); setSelectedItem(null); setSearchOffset(0); }
+    if (keyword.trim()) { setSearchQuery(keyword.trim()); setResearchingItemId(null); setSearchOffset(0); }
   };
 
   const handleCategoryClick = (cat: { id: string; name: string }) => {
@@ -1465,7 +1465,7 @@ export default function EbaySearch() {
                     検索
                   </Button>
                   <Button type="button" variant={soldOnly ? "default" : "outline"}
-                    onClick={() => { setSoldOnly(!soldOnly); setSelectedItem(null); setSearchOffset(0); }}
+                    onClick={() => { setSoldOnly(!soldOnly); setResearchingItemId(null); setSearchOffset(0); }}
                     className={`gap-1 text-xs whitespace-nowrap ${soldOnly ? "bg-green-600 hover:bg-green-700 text-white border-green-600" : ""}`}
                     title="実際に落札された価格を検索（より精度が高い）"
                     data-testid="button-sold-only">

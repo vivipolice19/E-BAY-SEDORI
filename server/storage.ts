@@ -1,4 +1,6 @@
 import { randomUUID } from "crypto";
+import path from "path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import type {
   SavedProduct,
   InsertSavedProduct,
@@ -9,6 +11,7 @@ import type {
   InventorySyncLog,
 } from "@shared/schema";
 import { loadPersistedSettings, savePersistedSettings } from "./settingsDb";
+import { loadAllSavedProductsFromDb, replaceSavedProductRow, deleteSavedProductRow } from "./productsDb";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -287,6 +290,7 @@ export class MemStorage implements IStorage {
       ebayCondition: product.ebayCondition ?? null,
       ebaySoldCount: product.ebaySoldCount ?? null,
       ebayImageUrl: product.ebayImageUrl ?? null,
+      ebayImageUrls: product.ebayImageUrls ?? null,
       ebayRating: product.ebayRating ?? null,
       sourcePrice: product.sourcePrice ?? null,
       sourcePlatform: product.sourcePlatform ?? null,
@@ -305,6 +309,15 @@ export class MemStorage implements IStorage {
       weight: product.weight ?? null,
       forwardingCost: product.forwardingCost ?? null,
       sheetRowIndex: product.sheetRowIndex ?? null,
+      marketAvgJpy: product.marketAvgJpy ?? null,
+      marketMinJpy: product.marketMinJpy ?? null,
+      marketMaxJpy: product.marketMaxJpy ?? null,
+      sourceCondition: product.sourceCondition ?? null,
+      sourceDescription: product.sourceDescription ?? null,
+      ebayConditionMapped: product.ebayConditionMapped ?? null,
+      ebayCategoryPath: product.ebayCategoryPath ?? null,
+      ebayCategoryId: product.ebayCategoryId ?? null,
+      ebayListingId: product.ebayListingId ?? null,
     };
     this.products.set(id, newProduct);
     return newProduct;
@@ -320,6 +333,17 @@ export class MemStorage implements IStorage {
 
   async deleteSavedProduct(id: string): Promise<boolean> {
     return this.products.delete(id);
+  }
+
+  /** DATABASE_URL 利用時に Postgres から一覧を復元する */
+  protected replaceProductsFromPersisted(rows: SavedProduct[]) {
+    this.products.clear();
+    for (const p of rows) this.products.set(p.id, p);
+  }
+
+  /** ファイル永続化用（子クラスからスナップショット取得） */
+  protected getAllProductsSnapshot(): SavedProduct[] {
+    return Array.from(this.products.values());
   }
 
   async getSettings(): Promise<AppSettings> {
@@ -398,11 +422,195 @@ export class MemStorage implements IStorage {
   }
 }
 
+const FILE_PERSIST_VERSION = 1;
+
+function getStateFilePath(): string {
+  const dir = process.env.PERSIST_DATA_DIR?.trim() || path.join(process.cwd(), ".data");
+  return path.join(dir, "sedori-state.json");
+}
+
+/**
+ * Postgres なしでも、ディスク上の JSON に設定・保存商品を書き戻す（スリープ／プロセス再起動後の復元用）。
+ * Render のエフェメラル FS では再デプロイで消える場合がある → 本番は DATABASE_URL 推奨。
+ */
+export class FilePersistedStorage extends MemStorage {
+  private fileHydrated = false;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private hydrateFromFileOnce(): void {
+    if (this.fileHydrated) return;
+    this.fileHydrated = true;
+    if (process.env.PERSIST_STATE === "0" || process.env.PERSIST_STATE === "false") return;
+    const fp = getStateFilePath();
+    if (!existsSync(fp)) return;
+    try {
+      const raw = JSON.parse(readFileSync(fp, "utf-8")) as {
+        settings?: Partial<AppSettings>;
+        products?: SavedProduct[];
+      };
+      if (raw.settings && typeof raw.settings === "object") {
+        this.settings = { ...this.settings, ...raw.settings } as AppSettings;
+      }
+      if (Array.isArray(raw.products) && raw.products.length > 0) {
+        const rows = raw.products.map((p) => ({
+          ...p,
+          createdAt: p.createdAt ? new Date(p.createdAt as unknown as string | number | Date) : new Date(),
+        })) as SavedProduct[];
+        this.replaceProductsFromPersisted(rows);
+      }
+      console.log(`[file-persist] Loaded ${fp} (${raw.products?.length ?? 0} products)`);
+    } catch (e) {
+      console.error("[file-persist] Failed to load state file:", e);
+    }
+  }
+
+  private flushToFile(): void {
+    if (process.env.PERSIST_STATE === "0" || process.env.PERSIST_STATE === "false") return;
+    try {
+      const fp = getStateFilePath();
+      mkdirSync(path.dirname(fp), { recursive: true });
+      const products = this.getAllProductsSnapshot();
+      writeFileSync(
+        fp,
+        JSON.stringify(
+          {
+            version: FILE_PERSIST_VERSION,
+            savedAt: new Date().toISOString(),
+            settings: this.settings,
+            products,
+          },
+          null,
+          0,
+        ),
+        "utf-8",
+      );
+    } catch (e) {
+      console.error("[file-persist] Failed to write state file:", e);
+    }
+  }
+
+  private schedulePersist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.flushToFile();
+    }, 350);
+  }
+
+  async getSettings(): Promise<AppSettings> {
+    this.hydrateFromFileOnce();
+    return super.getSettings();
+  }
+
+  async getSavedProducts(): Promise<SavedProduct[]> {
+    this.hydrateFromFileOnce();
+    return super.getSavedProducts();
+  }
+
+  async getSavedProduct(id: string): Promise<SavedProduct | undefined> {
+    this.hydrateFromFileOnce();
+    return super.getSavedProduct(id);
+  }
+
+  async createSavedProduct(product: InsertSavedProduct): Promise<SavedProduct> {
+    this.hydrateFromFileOnce();
+    const created = await super.createSavedProduct(product);
+    this.schedulePersist();
+    return created;
+  }
+
+  async updateSavedProduct(id: string, product: Partial<InsertSavedProduct>): Promise<SavedProduct | undefined> {
+    this.hydrateFromFileOnce();
+    const updated = await super.updateSavedProduct(id, product);
+    if (updated) this.schedulePersist();
+    return updated;
+  }
+
+  async deleteSavedProduct(id: string): Promise<boolean> {
+    this.hydrateFromFileOnce();
+    const ok = await super.deleteSavedProduct(id);
+    if (ok) this.schedulePersist();
+    return ok;
+  }
+
+  async updateSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
+    this.hydrateFromFileOnce();
+    const merged = await super.updateSettings(updates);
+    this.schedulePersist();
+    return merged;
+  }
+}
+
 /**
  * DATABASE_URL がある場合は app_settings 行を読み書きする。
  * Render の再起動・水平スケールでも設定（eBay App ID 等）が共有される。
  */
 export class DbBackedStorage extends MemStorage {
+  private productsHydrated = false;
+
+  private async ensureProductsHydrated(): Promise<void> {
+    if (!process.env.DATABASE_URL?.trim() || this.productsHydrated) return;
+    try {
+      const rows = await loadAllSavedProductsFromDb();
+      this.replaceProductsFromPersisted(rows);
+    } catch (e) {
+      console.error(
+        "[products] Failed to load from database (Render で Postgres を使う場合は `npm run db:push` で saved_products を作成):",
+        e,
+      );
+    }
+    this.productsHydrated = true;
+  }
+
+  async getSavedProducts(): Promise<SavedProduct[]> {
+    await this.ensureProductsHydrated();
+    return super.getSavedProducts();
+  }
+
+  async getSavedProduct(id: string): Promise<SavedProduct | undefined> {
+    await this.ensureProductsHydrated();
+    return super.getSavedProduct(id);
+  }
+
+  async createSavedProduct(product: InsertSavedProduct): Promise<SavedProduct> {
+    await this.ensureProductsHydrated();
+    const created = await super.createSavedProduct(product);
+    if (process.env.DATABASE_URL?.trim()) {
+      try {
+        await replaceSavedProductRow(created);
+      } catch (e) {
+        console.error("[products] Failed to persist new product:", e);
+      }
+    }
+    return created;
+  }
+
+  async updateSavedProduct(id: string, product: Partial<InsertSavedProduct>): Promise<SavedProduct | undefined> {
+    await this.ensureProductsHydrated();
+    const updated = await super.updateSavedProduct(id, product);
+    if (updated && process.env.DATABASE_URL?.trim()) {
+      try {
+        await replaceSavedProductRow(updated);
+      } catch (e) {
+        console.error("[products] Failed to persist product update:", e);
+      }
+    }
+    return updated;
+  }
+
+  async deleteSavedProduct(id: string): Promise<boolean> {
+    await this.ensureProductsHydrated();
+    const ok = await super.deleteSavedProduct(id);
+    if (ok && process.env.DATABASE_URL?.trim()) {
+      try {
+        await deleteSavedProductRow(id);
+      } catch (e) {
+        console.error("[products] Failed to delete product from database:", e);
+      }
+    }
+    return ok;
+  }
+
   async getSettings(): Promise<AppSettings> {
     if (!process.env.DATABASE_URL?.trim()) return super.getSettings();
     try {
@@ -410,6 +618,12 @@ export class DbBackedStorage extends MemStorage {
       if (row) this.settings = row;
     } catch (e) {
       console.error("[settings] Failed to load from database:", e);
+    }
+    const envSid =
+      process.env.SPREADSHEET_ID?.trim() ||
+      process.env.GOOGLE_SPREADSHEET_ID?.trim();
+    if (envSid && !String(this.settings.spreadsheetId || "").trim()) {
+      this.settings = { ...this.settings, spreadsheetId: envSid };
     }
     return this.settings;
   }
@@ -428,4 +642,4 @@ export class DbBackedStorage extends MemStorage {
 
 export const storage = process.env.DATABASE_URL?.trim()
   ? new DbBackedStorage()
-  : new MemStorage();
+  : new FilePersistedStorage();

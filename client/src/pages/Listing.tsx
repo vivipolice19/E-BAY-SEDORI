@@ -1383,9 +1383,9 @@ function SheetImportDialog({ onClose, onImported }: { onClose: () => void; onImp
       const listingDescription = row["説明文"] || undefined;
       const imageUrlsStr = row["写真URL"] || "";
       const ebayImageUrls = imageUrlsStr ? imageUrlsStr.split(",").map(u => u.trim()).filter(Boolean) : undefined;
+      const ebayImageUrl = ebayImageUrls?.[0] || undefined;
       const listingPriceStr = (row["出品価格($)"] || "").replace(/\$/, "");
       const listingPrice = parseFloat(listingPriceStr) || undefined;
-      // Restore Item Specifics from AD column (JSON string)
       const itemSpecificsStr = row["ItemSpecifics(JSON)"] || "";
       const listingItemSpecifics = itemSpecificsStr || undefined;
       return apiRequest("POST", "/api/products", {
@@ -1410,6 +1410,7 @@ function SheetImportDialog({ onClose, onImported }: { onClose: () => void; onImp
         ebayCategoryPath,
         ebayCategoryId,
         ebayImageUrls,
+        ebayImageUrl,
       });
     },
     onSuccess: async (res) => {
@@ -1460,8 +1461,22 @@ function SheetImportDialog({ onClose, onImported }: { onClose: () => void; onImp
                 const hasPhotos = !!row["写真URL"];
                 const hasSpecifics = !!row["ItemSpecifics(JSON)"];
                 const readyCount = [hasTitle, hasCondition, hasCategoryId, hasDescription, hasPhotos].filter(Boolean).length;
+                const photoUrls = (row["写真URL"] || "").split(",").map((u) => u.trim()).filter((u) => u.startsWith("http"));
+                const thumbUrl = photoUrls[0];
                 return (
                   <div key={i} className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/30">
+                    {thumbUrl ? (
+                      <img
+                        src={thumbUrl}
+                        alt=""
+                        className="w-14 h-14 object-cover rounded-md border border-border flex-shrink-0 bg-muted"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="w-14 h-14 rounded-md border border-dashed border-muted-foreground/30 flex-shrink-0 flex items-center justify-center text-[9px] text-muted-foreground text-center leading-tight px-0.5">
+                        写真なし
+                      </div>
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <p className="text-xs font-medium truncate flex-1">{row["商品名"]}</p>
@@ -1501,8 +1516,11 @@ function SheetImportDialog({ onClose, onImported }: { onClose: () => void; onImp
             </div>
           )}
         </div>
-        <div className="px-4 py-2 border-t border-border text-[10px] text-muted-foreground">
-          {rows.length}件 | スプレッドシートの「セドリリスト」シートから読み込んでいます
+        <div className="px-4 py-2 border-t border-border text-[10px] text-muted-foreground space-y-1">
+          <p>{rows.length}件 | スプレッドシートの「セドリリスト」シートから読み込んでいます</p>
+          <p className="text-amber-700/90 dark:text-amber-400/90">
+            保存リストを再起動後も残すには <span className="font-mono">DATABASE_URL</span>（Postgres）＋<span className="font-mono">npm run db:push</span> が確実です。Postgres が無い環境では <span className="font-mono">.data/sedori-state.json</span> に自動保存されます（Render の再デプロイで消える場合あり）。
+          </p>
         </div>
       </div>
     </div>
