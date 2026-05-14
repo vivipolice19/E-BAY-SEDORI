@@ -9,6 +9,8 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "db:push": "drizzle-kit push",
+    "db:push:ci": "drizzle-kit push --force",
+    "build:render": "npm run db:push:ci && npm run build",
     "playwright:install-browsers": "PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium chromium-headless-shell",
     "postinstall": "node scripts/playwright-postinstall.mjs"
   },

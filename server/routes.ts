@@ -34,8 +34,8 @@ function settingsResponseWithListingFlags(settings: AppSettings) {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   const inventorySyncService = new InventorySyncService(storage);
 
-  /** クライアント用: 永続化モード（Postgres 推奨の案内） */
-  app.get("/api/persistence", (_req, res) => {
+  /** クライアント用: 永続化モード（Postgres / テーブル有無の案内） */
+  app.get("/api/persistence", async (_req, res) => {
     const hasDb = !!process.env.DATABASE_URL?.trim();
     const persistOff =
       process.env.PERSIST_STATE === "0" || process.env.PERSIST_STATE === "false";
@@ -43,19 +43,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (hasDb) mode = "postgres";
     else if (persistOff) mode = "memory";
     else mode = "file";
-    const message =
-      hasDb
-        ? "設定・保存リストは PostgreSQL に保存されています。"
-        : mode === "file"
-          ? "設定・保存リストはサーバー上の .data/sedori-state.json に保存されています。再デプロイや別インスタンスでは消えることがあります。"
-          : "設定・保存リストはサーバーのメモリのみです。再起動で消えます。";
+
+    let dbTablesReady: boolean | null = null;
+    if (hasDb) {
+      try {
+        const { getPersistDb } = await import("./database");
+        const { sql } = await import("drizzle-orm");
+        const database = getPersistDb();
+        if (database) {
+          await database.execute(sql`select 1 from app_settings limit 1`);
+          dbTablesReady = true;
+        } else {
+          dbTablesReady = false;
+        }
+      } catch {
+        dbTablesReady = false;
+      }
+    }
+
+    const needsSchemaPush = hasDb && dbTablesReady === false;
+    const message = !hasDb
+      ? mode === "file"
+        ? "設定・保存リストはサーバー上の .data/sedori-state.json に保存されています。再デプロイや別インスタンスでは消えることがあります。"
+        : "設定・保存リストはサーバーのメモリのみです。再起動で消えます。"
+      : needsSchemaPush
+        ? "DATABASE_URL は設定されていますが、PostgreSQL に app_settings / saved_products などのテーブルがありません。"
+        : "設定・保存リストは PostgreSQL に保存されています。";
+
     res.json({
       mode,
       recommendPostgres: !hasDb,
+      dbTablesReady,
+      needsSchemaPush,
       message,
-      docsHint: hasDb
-        ? null
-        : "本番では DATABASE_URL に Postgres を接続し、デプロイ後に npm run db:push でテーブルを作成するのが確実です。",
+      docsHint: !hasDb
+        ? "本番では DATABASE_URL に Postgres を接続し、テーブル作成まで行うのが確実です。"
+        : needsSchemaPush
+          ? "Render 無料枠は Shell が使えないため、Build Command を「npm install && npm run build:render」にするか、PC のターミナルで External Database URL を DATABASE_URL にして npm run db:push:ci を実行してください。"
+          : null,
     });
   });
 
