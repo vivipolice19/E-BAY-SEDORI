@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { SavedProduct } from "@shared/schema";
+import { readLocalProductsBackup, savedProductsToInsertItems } from "@/lib/localProductsBackup";
 import {
   Package,
   Trash2,
@@ -32,10 +33,16 @@ export default function Watchlist() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [sort, setSort] = useState<SortType>("newest");
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [backupCount, setBackupCount] = useState(0);
+  const [restoringBackup, setRestoringBackup] = useState(false);
 
   const { data: products = [], isLoading } = useQuery<SavedProduct[]>({
     queryKey: ["/api/products"],
   });
+
+  useEffect(() => {
+    setBackupCount(readLocalProductsBackup()?.length ?? 0);
+  }, [products]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/products/${id}`),
@@ -102,6 +109,43 @@ export default function Watchlist() {
           <p className="text-sm text-muted-foreground mt-1">
             {products.length}件保存済み・{profitableCount}件利益あり・{unsyncedCount}件未同期
           </p>
+          {products.length === 0 && backupCount > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-300/80 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
+              <span>
+                このブラウザに保存したリスト（{backupCount}件）があります。サーバー側が空のときは復元できます。
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 border-amber-600 text-amber-900 dark:text-amber-50"
+                disabled={restoringBackup}
+                onClick={async () => {
+                  const backup = readLocalProductsBackup();
+                  if (!backup?.length) return;
+                  setRestoringBackup(true);
+                  try {
+                    const items = savedProductsToInsertItems(backup);
+                    const res = await apiRequest("POST", "/api/products/restore-batch", { items });
+                    const j = (await res.json()) as { restored?: number };
+                    await queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+                    setBackupCount(readLocalProductsBackup()?.length ?? 0);
+                    toast({
+                      title: "復元しました",
+                      description: `${j.restored ?? items.length}件をサーバーに書き戻しました。`,
+                    });
+                  } catch (e: any) {
+                    toast({ title: "復元エラー", description: e.message, variant: "destructive" });
+                  } finally {
+                    setRestoringBackup(false);
+                  }
+                }}
+              >
+                {restoringBackup ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                ブラウザのバックアップから復元
+              </Button>
+            </div>
+          )}
         </div>
         {unsyncedCount > 0 && (
           <Button

@@ -14,6 +14,7 @@ import Calculator from "@/pages/Calculator";
 import SheetsSync from "@/pages/SheetsSync";
 import SettingsPage from "@/pages/Settings";
 import ListingPage from "@/pages/Listing";
+import { ClientPersistenceBootstrap } from "@/components/ClientPersistenceBootstrap";
 
 const style = {
   "--sidebar-width": "14rem",
@@ -40,6 +41,7 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
+        <ClientPersistenceBootstrap />
         <SidebarProvider style={style as React.CSSProperties}>
           <div className="flex h-screen w-full overflow-hidden">
             <AppSidebar />

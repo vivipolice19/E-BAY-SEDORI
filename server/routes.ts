@@ -290,6 +290,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  /** ブラウザ localStorage バックアップから一括復元（Render の .data 消失など） */
+  app.post("/api/products/restore-batch", async (req, res) => {
+    try {
+      const schema = z.object({
+        items: z.array(insertSavedProductSchema).max(200),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.message });
+      }
+      let restored = 0;
+      const settings = await storage.getSettings();
+      for (const item of parsed.data.items) {
+        const extraFields: { profit?: number; profitRate?: number } = {};
+        if (item.ebayPriceJpy && item.sourcePrice) {
+          const ebayFee = item.ebayPriceJpy * ((settings.ebayFeeRate ?? 13.25) / 100);
+          const forwarding = item.forwardingCost != null ? item.forwardingCost : (settings.shippingCost || 0);
+          const other = settings.otherFees || 0;
+          const profit = Math.round(item.ebayPriceJpy - ebayFee - forwarding - other - item.sourcePrice);
+          const profitRate = parseFloat(((profit / item.ebayPriceJpy) * 100).toFixed(1));
+          extraFields.profit = profit;
+          extraFields.profitRate = profitRate;
+        }
+        await storage.createSavedProduct({ ...item, ...extraFields });
+        restored++;
+      }
+      res.json({ success: true, restored });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.patch("/api/products/:id", async (req, res) => {
     try {
       const settings = await storage.getSettings();

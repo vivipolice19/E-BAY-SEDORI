@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { AppSettings } from "@shared/schema";
+import { writeLocalSettingsBackupFromApiResponse } from "@/lib/localSettingsBackup";
 
 type SettingsResponse = AppSettings & {
   ebayUserTokenConfigured?: boolean;
@@ -83,8 +84,8 @@ export default function SettingsPage() {
   }, [settings]);
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      apiRequest("PUT", "/api/settings", {
+    mutationFn: async () => {
+      const res = await apiRequest("PUT", "/api/settings", {
         spreadsheetId,
         sheetName,
         inventorySheetName,
@@ -105,8 +106,11 @@ export default function SettingsPage() {
         ebayLocation: ebayLocation || "Japan",
         ebayAppId: ebayAppId.trim() || null,
         ebayCertId: ebayCertId.trim() || null,
-      }),
-    onSuccess: () => {
+      });
+      return (await res.json()) as SettingsResponse;
+    },
+    onSuccess: (data) => {
+      writeLocalSettingsBackupFromApiResponse(data);
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
       toast({ title: "保存しました", description: "設定を保存しました" });
     },
