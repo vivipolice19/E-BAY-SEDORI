@@ -34,6 +34,31 @@ function settingsResponseWithListingFlags(settings: AppSettings) {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   const inventorySyncService = new InventorySyncService(storage);
 
+  /** クライアント用: 永続化モード（Postgres 推奨の案内） */
+  app.get("/api/persistence", (_req, res) => {
+    const hasDb = !!process.env.DATABASE_URL?.trim();
+    const persistOff =
+      process.env.PERSIST_STATE === "0" || process.env.PERSIST_STATE === "false";
+    let mode: "postgres" | "file" | "memory";
+    if (hasDb) mode = "postgres";
+    else if (persistOff) mode = "memory";
+    else mode = "file";
+    const message =
+      hasDb
+        ? "設定・保存リストは PostgreSQL に保存されています。"
+        : mode === "file"
+          ? "設定・保存リストはサーバー上の .data/sedori-state.json に保存されています。再デプロイや別インスタンスでは消えることがあります。"
+          : "設定・保存リストはサーバーのメモリのみです。再起動で消えます。";
+    res.json({
+      mode,
+      recommendPostgres: !hasDb,
+      message,
+      docsHint: hasDb
+        ? null
+        : "本番では DATABASE_URL に Postgres を接続し、デプロイ後に npm run db:push でテーブルを作成するのが確実です。",
+    });
+  });
+
   // ---- eBay Search ----
   app.get("/api/ebay/search", async (req, res) => {
     try {

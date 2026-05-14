@@ -15,6 +15,7 @@ import SheetsSync from "@/pages/SheetsSync";
 import SettingsPage from "@/pages/Settings";
 import ListingPage from "@/pages/Listing";
 import { ClientPersistenceBootstrap } from "@/components/ClientPersistenceBootstrap";
+import { PersistenceBanner } from "@/components/PersistenceBanner";
 
 const style = {
   "--sidebar-width": "14rem",
@@ -49,6 +50,7 @@ function App() {
               <header className="flex items-center px-4 py-2 border-b border-border bg-background flex-shrink-0 h-12">
                 <SidebarTrigger data-testid="button-sidebar-toggle" />
               </header>
+              <PersistenceBanner />
               <main className="flex-1 overflow-y-auto">
                 <Router />
               </main>

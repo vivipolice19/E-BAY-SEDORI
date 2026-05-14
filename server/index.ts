@@ -62,6 +62,13 @@ app.use((req, res, next) => {
 (async () => {
   await registerRoutes(httpServer, app);
 
+  if (process.env.NODE_ENV === "production" && !process.env.DATABASE_URL?.trim()) {
+    log(
+      "[persistence] DATABASE_URL が未設定です。設定・保存リストは再デプロイで失われる可能性があります。Postgres を接続し npm run db:push を実行してください。",
+      "sedori",
+    );
+  }
+
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
