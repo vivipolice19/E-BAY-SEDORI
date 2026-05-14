@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { SavedProduct } from "@shared/schema";
-import { readLocalProductsBackup, savedProductsToInsertItems } from "@/lib/localProductsBackup";
+import { readLocalProductsBackup, savedProductsToInsertItems, clearLocalProductsBackup } from "@/lib/localProductsBackup";
 import {
   Package,
   Trash2,
@@ -143,6 +143,23 @@ export default function Watchlist() {
               >
                 {restoringBackup ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
                 ブラウザのバックアップから復元
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                disabled={restoringBackup}
+                onClick={() => {
+                  clearLocalProductsBackup();
+                  setBackupCount(0);
+                  toast({
+                    title: "バックアップを削除しました",
+                    description: "このブラウザに保存していたリストのコピーを消しました。",
+                  });
+                }}
+              >
+                バックアップを削除
               </Button>
             </div>
           )}

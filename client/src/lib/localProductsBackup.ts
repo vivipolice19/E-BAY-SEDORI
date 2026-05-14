@@ -17,6 +17,15 @@ export function readLocalProductsBackup(): SavedProduct[] | null {
   }
 }
 
+/** ブラウザ内の保存リストバックアップを削除（復元ボタンを消したいとき） */
+export function clearLocalProductsBackup(): void {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function writeLocalProductsBackup(products: SavedProduct[]): void {
   try {
     const items = products.length > MAX_ITEMS ? products.slice(0, MAX_ITEMS) : [...products];
